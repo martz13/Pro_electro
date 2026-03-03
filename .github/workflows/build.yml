@@ -25,13 +25,7 @@ jobs:
 
       - name: Crear ejecutable
         run: |
-          pyinstaller --onefile --windowed ^
-          --icon=recursos/logo.ico ^
-          --add-data "recursos;recursos" ^
-          --add-data "base_datos;base_datos" ^
-          --add-data "utilidades;utilidades" ^
-          --add-data "vistas;vistas" ^
-          main.py
+          pyinstaller --onefile --windowed --icon=recursos/logo.ico --add-data "recursos;recursos" --add-data "base_datos;base_datos" --add-data "utilidades;utilidades" --add-data "vistas;vistas" main.py
 
       - name: Subir ejecutable
         uses: actions/upload-artifact@v4
