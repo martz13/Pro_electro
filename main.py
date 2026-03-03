@@ -4,22 +4,26 @@ from PySide6.QtWidgets import QApplication
 from base_datos.conexion import inicializar_bd
 from vistas.login import LoginWindow
 
+
+def resource_path(relative_path):
+    try:
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+
 if __name__ == "__main__":
-    # 1. Asegurarnos de que la base de datos local y el usuario existan
     inicializar_bd()
 
-    # 2. Iniciar la aplicación
     app = QApplication(sys.argv)
 
-    # 3. Cargar la hoja de estilos global
-    ruta_estilos = os.path.join(os.path.dirname(__file__), "recursos", "estilos.qss")
+    ruta_estilos = resource_path("recursos/estilos.qss")
     if os.path.exists(ruta_estilos):
         with open(ruta_estilos, "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())
 
-    # 4. Mostrar la interfaz de Login
     ventana = LoginWindow()
     ventana.show()
 
-    # 5. Ejecutar el bucle principal
     sys.exit(app.exec())
