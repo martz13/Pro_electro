@@ -1,0 +1,245 @@
+/* ==========================================
+   ESTILOS GLOBALES
+   ========================================== */
+QWidget {
+    background-color: #F4F6F9;
+    font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14px;
+    color: #2D3748;
+}
+
+/* ==========================================
+   CAMPOS DE TEXTO (Inputs)
+   ========================================== */
+QLineEdit {
+    background-color: #FFFFFF;
+    border: 1px solid #CBD5E0;
+    border-radius: 6px;
+    padding: 10px 15px;
+    font-size: 14px;
+    color: #1A202C;
+}
+
+QLineEdit:focus {
+    border: 1px solid #3182CE;
+    background-color: #FFFFFF;
+}
+
+QLineEdit::placeholder {
+    color: #A0AEC0;
+}
+
+/* ==========================================
+   ETIQUETAS (Textos estáticos)
+   ========================================== */
+QLabel#labelTitulo {
+    font-size: 16px;
+    font-weight: bold;
+    color: #2D3748;
+    margin-bottom: 2px;
+}
+
+/* ==========================================
+   BOTONES PRINCIPALES
+   ========================================== */
+QPushButton#botonPrincipal {
+    background-color: #333333;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 6px;
+    padding: 12px 20px;
+    font-size: 16px;
+    font-weight: bold;
+    min-height: 40px;
+}
+
+QPushButton#botonPrincipal:hover {
+    background-color: #555555;
+}
+
+QPushButton#botonPrincipal:pressed {
+    background-color: #1A1A1A;
+}
+
+/* ==========================================
+   BOTONES DE ACCIÓN (Editar/Eliminar) - VERSIÓN COMPACTA
+   ========================================== */
+QPushButton#botonEditar {
+    background-color: #f39c12;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    padding: 5px 10px;
+    font-weight: bold;
+    font-size: 12px;
+    min-width: 70px;
+    min-height: 28px;
+    max-height: 28px;
+}
+
+QPushButton#botonEditar:hover {
+    background-color: #e67e22;
+}
+
+QPushButton#botonEliminar {
+    background-color: #e74c3c;
+    color: white;
+    border: none;
+    border-radius: 3px;
+    padding: 5px 10px;
+    font-weight: bold;
+    font-size: 12px;
+    min-width: 70px;
+    min-height: 28px;
+    max-height: 28px;
+}
+
+QPushButton#botonEliminar:hover {
+    background-color: #c0392b;
+}
+
+/* ==========================================
+   BOTÓN AGREGAR (Verde)
+   ========================================== */
+QPushButton#botonAgregar {
+    background-color: #27ae60;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    padding: 8px 15px;
+    font-weight: bold;
+    font-size: 14px;
+    min-height: 35px;
+    min-width: 150px;
+}
+
+QPushButton#botonAgregar:hover {
+    background-color: #2ecc71;
+}
+
+/* ==========================================
+   BOTÓN ENLACE (Olvidé contraseña)
+   ========================================== */
+QPushButton#botonEnlace {
+    background-color: transparent;
+    color: #3182CE;
+    font-weight: normal;
+    font-size: 13px;
+    padding: 5px;
+    border: none;
+}
+
+QPushButton#botonEnlace:hover {
+    text-decoration: underline;
+    color: #2B6CB0;
+}
+
+/* ==========================================
+   TABLAS
+   ========================================== */
+QTableWidget {
+    background-color: #FFFFFF;
+    border: 1px solid #CBD5E0;
+    border-radius: 6px;
+    gridline-color: #E2E8F0;
+    font-size: 14px;
+    selection-background-color: #3498db;
+}
+
+QTableWidget::item {
+    padding: 8px;
+}
+
+QTableWidget::item:selected {
+    background-color: #3498db;
+    color: white;
+}
+
+QHeaderView::section {
+    background-color: #34495e;
+    color: white;
+    padding: 10px;
+    border: none;
+    font-weight: bold;
+    font-size: 14px;
+}
+
+QTableWidget::item:alternate {
+    background-color: #F9FAFB;
+}
+
+/* ==========================================
+   COMBOBOX (Selectores)
+   ========================================== */
+QComboBox {
+    background-color: #FFFFFF;
+    border: 1px solid #CBD5E0;
+    border-radius: 6px;
+    padding: 8px 15px;
+    min-height: 35px;
+}
+
+QComboBox::drop-down {
+    border: none;
+    width: 30px;
+}
+
+QComboBox::down-arrow {
+    image: none;
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 5px solid #333333;
+    margin-right: 10px;
+}
+
+QComboBox:focus {
+    border: 1px solid #3182CE;
+}
+
+/* ==========================================
+   DIALOGOS Y MENSAJES
+   ========================================== */
+QDialog {
+    background-color: #F4F6F9;
+}
+
+QMessageBox {
+    background-color: #FFFFFF;
+}
+
+/* ==========================================
+   SCROLLBARS
+   ========================================== */
+QScrollBar:vertical {
+    border: none;
+    background-color: #F0F0F0;
+    width: 10px;
+    border-radius: 5px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #C0C0C0;
+    border-radius: 5px;
+    min-height: 20px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #A0A0A0;
+}
+
+QScrollBar:horizontal {
+    border: none;
+    background-color: #F0F0F0;
+    height: 10px;
+    border-radius: 5px;
+}
+
+QScrollBar::handle:horizontal {
+    background-color: #C0C0C0;
+    border-radius: 5px;
+    min-width: 20px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background-color: #A0A0A0;
+}
