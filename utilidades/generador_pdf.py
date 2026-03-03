@@ -4,6 +4,7 @@ from fpdf import FPDF
 from num2words import num2words
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 from base_datos.conexion import obtener_conexion
+from utilidades.recursos import resource_path
 
 def clean_text(text):
     """Convierte texto Unicode a ASCII aproximado, eliminando acentos y caracteres especiales."""
@@ -82,7 +83,7 @@ def generar_pdf_cotizacion(folio_cotizacion, parent_widget=None):
     pdf.add_page()
     
     # Fuentes y rutas
-    ruta_logo = os.path.join(os.path.dirname(os.path.dirname(__file__)), "recursos", "logo.png")
+    ruta_logo = resource_path("recursos/logo.png")
 
     # ================= ENCABEZADO IZQUIERDO =================
     if os.path.exists(ruta_logo):
