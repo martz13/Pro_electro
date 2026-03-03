@@ -1,0 +1,40 @@
+name: Build Pro Electro Windows
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Crear ejecutable
+        run: |
+          pyinstaller --onefile --windowed ^
+          --icon=recursos/logo.ico ^
+          --add-data "recursos;recursos" ^
+          --add-data "base_datos;base_datos" ^
+          --add-data "utilidades;utilidades" ^
+          --add-data "vistas;vistas" ^
+          main.py
+
+      - name: Subir ejecutable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pro_Electro_Windows
+          path: dist/*.exe
