@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QDialog, QMessageBox, QGridLayout, QComboBox, QListWidget, QListWidgetItem
 )
 from PySide6.QtCore import Qt
-from base_datos.conexion import obtener_conexion
+from base_datos.conexion import obtener_conexion, registrar_en_cola_sync
 
 
 # ────────────────────────────────────────────────
@@ -52,8 +52,18 @@ class DialogoNuevaUM(QDialog):
 
         conn = obtener_conexion()
         try:
-            conn.execute("INSERT INTO catalogo_um (sigla, descripcion) VALUES (?, ?)", (sigla, desc))
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO catalogo_um (sigla, descripcion) VALUES (?, ?)", (sigla, desc))
+            nuevo_id = cursor.lastrowid
+            
+            datos_dict = {
+                "sigla": sigla,
+                "descripcion": desc
+            }
+            
             conn.commit()
+            registrar_en_cola_sync('catalogo_um', 'INSERT', nuevo_id, datos_dict)
+            
             self.accept()
         except Exception as e:
             if "UNIQUE" in str(e).upper():
@@ -218,6 +228,17 @@ class DialogoProducto(QDialog):
         marca = self.input_marca.text().strip()
 
         datos = (codigo, desc, stock, um, prov_id, marca, compra, venta)
+        
+        datos_dict = {
+            "codigo_producto": codigo,
+            "descripcion": desc,
+            "stock": stock,
+            "um": um,
+            "proveedor_id": prov_id,
+            "marca": marca,
+            "precio_compra": compra,
+            "precio_venta": venta
+        }
 
         conn = obtener_conexion()
         cursor = conn.cursor()
@@ -229,13 +250,21 @@ class DialogoProducto(QDialog):
                         proveedor_id=?, marca=?, precio_compra=?, precio_venta=?
                     WHERE id=?
                 """, (*datos, self.producto_id))
+                
+                conn.commit()
+                registrar_en_cola_sync('inventario', 'UPDATE', self.producto_id, datos_dict)
+                
             else:
                 cursor.execute("""
                     INSERT INTO inventario
                     (codigo_producto, descripcion, stock, um, proveedor_id, marca, precio_compra, precio_venta)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, datos)
-            conn.commit()
+                
+                nuevo_id = cursor.lastrowid
+                conn.commit()
+                registrar_en_cola_sync('inventario', 'INSERT', nuevo_id, datos_dict)
+                
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Error al guardar", str(e))
@@ -363,8 +392,7 @@ class DialogoGestionUM(QDialog):
             self.actualizar_combo_padre()
 
     def eliminar_um(self, uid, sigla):
-        """Elimina una unidad de medida y actualiza productos afectados"""
-        # Primero verificar cuántos productos usan esta UM
+        """Elimina una unidad de medida y actualiza productos afectados de forma individual para la sincronización"""
         conn = obtener_conexion()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM inventario WHERE um = ?", (sigla,))
@@ -387,25 +415,42 @@ class DialogoGestionUM(QDialog):
         if reply == QMessageBox.Yes:
             conn = obtener_conexion()
             try:
-                # Iniciar transacción
                 cursor = conn.cursor()
                 
-                # ACTUALIZACIÓN CORREGIDA: Usar 'S/U' como valor por defecto en lugar de NULL
+                # 1. Recuperar TODOS los datos de los productos que van a ser afectados
                 cursor.execute("""
-                    UPDATE inventario 
-                    SET um = 'S/U' 
-                    WHERE um = ?
+                    SELECT id, codigo_producto, descripcion, stock, proveedor_id, marca, precio_compra, precio_venta 
+                    FROM inventario WHERE um = ?
                 """, (sigla,))
+                productos_afectados = cursor.fetchall()
                 
-                # Luego eliminar la UM
+                # 2. Ejecutar la actualización y eliminación en SQLite local
+                cursor.execute("UPDATE inventario SET um = 'S/U' WHERE um = ?", (sigla,))
                 cursor.execute("DELETE FROM catalogo_um WHERE id = ?", (uid,))
                 
                 conn.commit()
                 
-                # Recargar la tabla
-                self.cargar_tabla()
+                # 3. Registrar en la cola de sincronización los productos afectados UNO POR UNO
+                for prod in productos_afectados:
+                    p_id, p_codigo, p_desc, p_stock, p_prov_id, p_marca, p_compra, p_venta = prod
+                    
+                    prod_dict = {
+                        "codigo_producto": p_codigo,
+                        "descripcion": p_desc,
+                        "stock": p_stock,
+                        "um": "S/U", # El nuevo valor
+                        "proveedor_id": p_prov_id,
+                        "marca": p_marca,
+                        "precio_compra": p_compra,
+                        "precio_venta": p_venta
+                    }
+                    registrar_en_cola_sync('inventario', 'UPDATE', p_id, prod_dict)
                 
-                # Actualizar combo en el diálogo padre
+                # 4. Registrar la eliminación de la unidad de medida principal
+                registrar_en_cola_sync('catalogo_um', 'DELETE', uid, None)
+                
+                # Recargar la tabla y combos
+                self.cargar_tabla()
                 self.actualizar_combo_padre()
                 
                 QMessageBox.information(self, "Éxito", 
@@ -417,11 +462,6 @@ class DialogoGestionUM(QDialog):
                 QMessageBox.critical(self, "Error", f"No se pudo eliminar:\n{str(e)}")
             finally:
                 conn.close()
-
-    def actualizar_combo_padre(self):
-        """Actualiza el combo de unidades en el diálogo padre si es DialogoProducto"""
-        if isinstance(self.parent(), DialogoProducto):
-            self.parent().cargar_unidades_medida()
 
 
 # ────────────────────────────────────────────────
@@ -479,7 +519,7 @@ class DialogoEditarUM(QDialog):
         layout.addLayout(btn_layout)
 
     def guardar(self):
-        """Guarda los cambios de la unidad de medida y actualiza productos"""
+        """Guarda los cambios de la unidad de medida y actualiza productos individualmente para sincronización"""
         nueva_sigla = self.input_sigla.text().strip().upper()
         nueva_desc = self.input_desc.text().strip()
 
@@ -491,21 +531,26 @@ class DialogoEditarUM(QDialog):
         try:
             cursor = conn.cursor()
             
-            # Verificar si la nueva sigla ya existe (y no es la misma)
             cursor.execute("SELECT id FROM catalogo_um WHERE sigla = ? AND id != ?", 
                           (nueva_sigla, self.uid))
             if cursor.fetchone():
                 QMessageBox.warning(self, "Duplicado", f"La sigla '{nueva_sigla}' ya existe.")
                 return
 
-            # Actualizar la unidad de medida
+            # 1. Recuperar los productos que van a ser modificados por el cambio de sigla
+            cursor.execute("""
+                SELECT id, codigo_producto, descripcion, stock, proveedor_id, marca, precio_compra, precio_venta 
+                FROM inventario WHERE um = ?
+            """, (self.sigla_actual,))
+            productos_afectados = cursor.fetchall()
+
+            # 2. Actualizar localmente la unidad de medida y los productos
             cursor.execute("""
                 UPDATE catalogo_um 
                 SET sigla = ?, descripcion = ? 
                 WHERE id = ?
             """, (nueva_sigla, nueva_desc, self.uid))
             
-            # Actualizar todos los productos que tenían la sigla anterior
             cursor.execute("""
                 UPDATE inventario 
                 SET um = ? 
@@ -513,6 +558,29 @@ class DialogoEditarUM(QDialog):
             """, (nueva_sigla, self.sigla_actual))
             
             conn.commit()
+            
+            # 3. Registrar actualizaciones individuales de los productos afectados en la cola
+            for prod in productos_afectados:
+                p_id, p_codigo, p_desc, p_stock, p_prov_id, p_marca, p_compra, p_venta = prod
+                prod_dict = {
+                    "codigo_producto": p_codigo,
+                    "descripcion": p_desc,
+                    "stock": p_stock,
+                    "um": nueva_sigla, # La nueva sigla
+                    "proveedor_id": p_prov_id,
+                    "marca": p_marca,
+                    "precio_compra": p_compra,
+                    "precio_venta": p_venta
+                }
+                registrar_en_cola_sync('inventario', 'UPDATE', p_id, prod_dict)
+                
+            # 4. Registrar la actualización de la tabla catalogo_um en la cola
+            um_dict = {
+                "sigla": nueva_sigla,
+                "descripcion": nueva_desc
+            }
+            registrar_en_cola_sync('catalogo_um', 'UPDATE', self.uid, um_dict)
+            
             self.accept()
             
         except Exception as e:
@@ -527,9 +595,9 @@ class DialogoEditarUM(QDialog):
 # Vista principal de Inventario
 # ────────────────────────────────────────────────
 class VistaInventario(QWidget):
-    def __init__(self):
+    def __init__(self, rol="Super admin"):
         super().__init__()
-
+        self.rol = rol
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(18)
@@ -550,6 +618,9 @@ class VistaInventario(QWidget):
         btn_nuevo.setMinimumHeight(42)
         btn_nuevo.setMinimumWidth(170)
         btn_nuevo.clicked.connect(self.agregar_producto)
+        
+        if self.rol == "Vendedor":
+            btn_nuevo.setVisible(False)
 
         header.addWidget(titulo)
         header.addStretch()
@@ -601,7 +672,12 @@ class VistaInventario(QWidget):
             }
         """)
 
-        self.tabla.cellDoubleClicked.connect(self.editar_con_doble_clic)
+        if self.rol == "Vendedor":
+            self.tabla.setColumnHidden(7, True) # Oculta la columna "Costo"
+            self.tabla.setColumnHidden(9, True) # Oculta la columna "Acciones" (botones de editar/eliminar)
+        else:
+            # Solo los Super admin pueden editar con doble clic
+            self.tabla.cellDoubleClicked.connect(self.editar_con_doble_clic)
         layout.addWidget(self.tabla)
 
         self.cargar_datos()
@@ -699,6 +775,10 @@ class VistaInventario(QWidget):
             try:
                 conn.execute("DELETE FROM inventario WHERE id = ?", (pid,))
                 conn.commit()
+                
+                # Registramos en la cola
+                registrar_en_cola_sync('inventario', 'DELETE', pid, None)
+                
                 self.cargar_datos()
             except Exception as e:
                 QMessageBox.critical(self, "Error", str(e))

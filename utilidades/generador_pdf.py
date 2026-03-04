@@ -10,19 +10,17 @@ def clean_text(text):
     """Convierte texto Unicode a ASCII aproximado, eliminando acentos y caracteres especiales."""
     if not isinstance(text, str):
         text = str(text)
-    # Normalizar y eliminar diacríticos
     return unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
 
 class PDFCotizacion(FPDF):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.set_auto_page_break(auto=True, margin=15)
-        # Colores corporativos
         self.rojo_oscuro = (192, 0, 0)
         self.negro = (0, 0, 0)
         self.blanco = (255, 255, 255)
         self.verde = (0, 153, 51)
-        self.naranja_oscuro = (204, 102, 0) # Nuevo color para Sobrepedido
+        self.naranja_oscuro = (204, 102, 0)
 
 def generar_pdf_cotizacion(folio_cotizacion, parent_widget=None):
     conexion = obtener_conexion()
@@ -50,12 +48,12 @@ def generar_pdf_cotizacion(folio_cotizacion, parent_widget=None):
     fiscal_data = cursor.fetchone()
     rep_legal, tel_emp, ubi_emp, rfc_emp, terminos = fiscal_data if fiscal_data else ("-", "-", "-", "-", "")
 
-    # 3. Obtener detalle de productos (INCLUYENDO DISPONIBILIDAD)
+    # 3. Obtener detalle de productos
     cursor.execute("SELECT codigo_producto, descripcion, cantidad, um, precio_unitario, monto, disponibilidad FROM cotizaciones_detalle WHERE cotizacion_id=?", (id_cot,))
     productos = cursor.fetchall()
     conexion.close()
 
-    # Limpiar textos que puedan contener caracteres especiales
+    # Limpieza de textos
     rep_legal = clean_text(rep_legal)
     tel_emp = clean_text(tel_emp)
     ubi_emp = clean_text(ubi_emp)
@@ -70,22 +68,19 @@ def generar_pdf_cotizacion(folio_cotizacion, parent_widget=None):
     oc = clean_text(oc if oc else "N/D")
     obra = clean_text(obra if obra else "N/D")
     terminos = clean_text(terminos)
-    # Para productos, limpiar descripción (otros campos son numéricos o códigos sin acentos)
+    
     productos_limpios = []
     for prod in productos:
         cod, desc, cant, um, precio, monto, disp = prod
-        desc_limpia = clean_text(desc)
-        um_limpia = clean_text(um)
-        productos_limpios.append((cod, desc_limpia, cant, um_limpia, precio, monto, disp))
+        productos_limpios.append((cod, clean_text(desc), cant, clean_text(um), precio, monto, disp))
 
     # --- INICIO DEL DISEÑO DEL PDF ---
     pdf = PDFCotizacion(orientation="P", unit="mm", format="A4")
     pdf.add_page()
     
-    # Fuentes y rutas
     ruta_logo = resource_path("recursos/logo.png")
 
-    # ================= ENCABEZADO IZQUIERDO =================
+    # ================= ENCABEZADO =================
     if os.path.exists(ruta_logo):
         pdf.image(ruta_logo, x=10, y=8, w=32) 
     
@@ -97,12 +92,10 @@ def generar_pdf_cotizacion(folio_cotizacion, parent_widget=None):
     pdf.cell(0, 4, rfc_emp, ln=True)
     pdf.ln(2)
 
-    # Etiqueta CLIENTE roja
     pdf.set_fill_color(*pdf.rojo_oscuro)
     pdf.set_text_color(*pdf.blanco)
     pdf.cell(20, 5, "CLIENTE", border=0, ln=True, fill=True, align="C")
     
-    # Datos del cliente
     pdf.set_text_color(*pdf.negro)
     pdf.set_font("helvetica", "B", 9)
     pdf.cell(0, 4, nom_cl, ln=True)
@@ -110,13 +103,10 @@ def generar_pdf_cotizacion(folio_cotizacion, parent_widget=None):
     pdf.cell(0, 4, dir_cl, ln=True)
     pdf.cell(0, 4, f"{col_cl} {pob_cl} CP {cp_cl}", ln=True)
 
-    # ================= ENCABEZADO DERECHO =================
-    # Título COTIZACIÓN
     pdf.set_font("helvetica", "B", 20)
     pdf.set_xy(135, 12)
     pdf.cell(60, 10, "COTIZACIÓN", ln=True, align="R")
 
-    # Tabla de metadatos (FECHA, FOLIO, etc.)
     pdf.set_font("helvetica", "B", 8)
     x_meta = 145
     y_meta = 25
@@ -145,28 +135,42 @@ def generar_pdf_cotizacion(folio_cotizacion, parent_widget=None):
             pdf.set_text_color(*pdf.negro)
             pdf.cell(25, alto_celda, valores[i], border=1, fill=True, align="C")
 
-    # ================= TABLA DE PRODUCTOS =================
-    y_tabla = 75
-    pdf.set_xy(10, y_tabla)
-    pdf.set_font("helvetica", "B", 8)
-    pdf.set_fill_color(*pdf.rojo_oscuro)
-    pdf.set_text_color(*pdf.blanco)
-
-    # Anchos de columnas (Total = 190mm)
+    # ================= TABLA DE PRODUCTOS (DINÁMICA) =================
+    pdf.set_xy(10, 75)
     w_col = [20, 80, 15, 10, 20, 25, 20]
     headers = ["CODIGO", "DESCRIPCIÓN", "CANT.", "UM", "PRECIO", "MONTO", "STOCK"]
 
-    for i in range(len(headers)):
-        pdf.cell(w_col[i], 5, headers[i], border=1, fill=True, align="C")
-    pdf.ln()
+    def dibujar_encabezados():
+        pdf.set_font("helvetica", "B", 8)
+        pdf.set_fill_color(*pdf.rojo_oscuro)
+        pdf.set_text_color(*pdf.blanco)
+        for i in range(len(headers)):
+            pdf.cell(w_col[i], 5, headers[i], border=1, fill=True, align="C")
+        pdf.ln()
+        pdf.set_font("helvetica", "", 8)
+        pdf.set_text_color(*pdf.negro)
+        return pdf.get_y()
 
-    # Filas de productos
-    pdf.set_font("helvetica", "", 8)
-    pdf.set_text_color(*pdf.negro)
-    
-    y_actual = pdf.get_y()
+    y_tabla_inicio = dibujar_encabezados()
+
     for prod in productos_limpios:
         cod, desc, cant, um, precio, monto, disp = prod
+        
+        # Calcular altura estimada de la fila (predictivo)
+        pdf.set_font("helvetica", "", 8)
+        lineas = 0
+        for parrafo in desc.split('\n'):
+            ancho_texto = pdf.get_string_width(parrafo)
+            lineas += max(1, int(ancho_texto / (w_col[1] - 3)) + 1)
+        alto_fila = lineas * 5
+        
+        # Salto de página si el producto no cabe
+        if pdf.get_y() + alto_fila > 260:
+            # Cerrar el recuadro de la hoja actual
+            pdf.rect(10, y_tabla_inicio, 190, pdf.get_y() - y_tabla_inicio)
+            pdf.add_page()
+            y_tabla_inicio = dibujar_encabezados()
+            
         x_inicio = pdf.get_x()
         y_inicio = pdf.get_y()
         
@@ -197,15 +201,27 @@ def generar_pdf_cotizacion(folio_cotizacion, parent_widget=None):
         
         pdf.set_y(max(y_max, y_inicio + 5))
 
-    # Dibujar el rectángulo exterior de la tabla
-    alto_caja = 130
-    pdf.rect(10, y_tabla, 190, alto_caja)
+    # Definir el final de la tabla
+    y_final = pdf.get_y()
+    
+    # Si estamos en la primera hoja y hay pocos artículos, forzamos un tamaño mínimo estético
+    if pdf.page_no() == 1 and y_final < (y_tabla_inicio + 130):
+        y_final = y_tabla_inicio + 130
+        
+    # Dibujar el recuadro de la tabla hasta donde haya llegado
+    pdf.rect(10, y_tabla_inicio, 190, y_final - y_tabla_inicio)
+    pdf.set_y(y_final)
 
     # ================= TOTALES Y CANTIDAD EN LETRA =================
-    y_totales = y_tabla + alto_caja + 5
+    # Revisar si hay espacio suficiente en esta página para los totales y términos (aprox. 50mm requeridos)
+    if pdf.get_y() + 50 > 280:
+        pdf.add_page()
+        y_totales = 15
+    else:
+        y_totales = pdf.get_y() + 5
+        
     pdf.set_xy(10, y_totales + 10)
     
-    # Texto importe con letra
     pesos = int(total)
     centavos = int(round((total - pesos) * 100))
     texto_letras = num2words(pesos, lang='es').upper()
@@ -214,7 +230,6 @@ def generar_pdf_cotizacion(folio_cotizacion, parent_widget=None):
     pdf.set_font("helvetica", "B", 9)
     pdf.cell(120, 5, importe_letra, ln=False, align="L")
 
-    # Cuadro de totales
     subtotal = total / 1.16
     iva = total - subtotal
 
@@ -261,10 +276,8 @@ def generar_pdf_cotizacion(folio_cotizacion, parent_widget=None):
             nombre_sugerido,
             "Archivos PDF (*.pdf);;Todos los archivos (*.*)"
         )
-        
         if not ruta_guardado:
             return False, "Operación cancelada por el usuario"
-        
         if not ruta_guardado.lower().endswith('.pdf'):
             ruta_guardado += '.pdf'
     else:
@@ -284,7 +297,6 @@ def generar_pdf_cotizacion(folio_cotizacion, parent_widget=None):
             if respuesta == QMessageBox.Yes:
                 import subprocess
                 import platform
-                
                 if platform.system() == 'Windows':
                     os.startfile(ruta_guardado)
                 elif platform.system() == 'Darwin':

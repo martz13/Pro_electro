@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QComboBox)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QColor
-from base_datos.conexion import obtener_conexion
+from base_datos.conexion import obtener_conexion, registrar_en_cola_sync
 
 class DialogoUsuario(QDialog):
     def __init__(self, parent=None, usuario_id=None, nombre="", correo="", rol="Vendedor"):
@@ -100,20 +100,47 @@ class DialogoUsuario(QDialog):
                         SET nombre_completo=?, correo=?, password=?, rol=? 
                         WHERE id=?
                     """, (nombre, correo, hash_pw, rol, self.usuario_id))
+                    
+                    datos_dict = {
+                        "nombre_completo": nombre,
+                        "correo": correo,
+                        "password": hash_pw,
+                        "rol": rol
+                    }
                 else:
                     cursor.execute("""
                         UPDATE usuarios 
                         SET nombre_completo=?, correo=?, rol=? 
                         WHERE id=?
                     """, (nombre, correo, rol, self.usuario_id))
+                    
+                    datos_dict = {
+                        "nombre_completo": nombre,
+                        "correo": correo,
+                        "rol": rol
+                    }
+                
+                conexion.commit()
+                registrar_en_cola_sync('usuarios', 'UPDATE', self.usuario_id, datos_dict)
+                
             else: # NUEVO
                 hash_pw = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
                 cursor.execute("""
                     INSERT INTO usuarios (nombre_completo, correo, password, rol) 
                     VALUES (?, ?, ?, ?)
                 """, (nombre, correo, hash_pw, rol))
+                
+                nuevo_id = cursor.lastrowid
+                datos_dict = {
+                    "nombre_completo": nombre,
+                    "correo": correo,
+                    "password": hash_pw,
+                    "rol": rol
+                }
+                
+                conexion.commit()
+                registrar_en_cola_sync('usuarios', 'INSERT', nuevo_id, datos_dict)
             
-            conexion.commit()
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo guardar: {str(e)}")
@@ -345,6 +372,10 @@ class VistaUsuarios(QWidget):
                 cursor = conexion.cursor()
                 cursor.execute("DELETE FROM usuarios WHERE id=?", (uid,))
                 conexion.commit()
+                
+                # Registro en la cola de sincronización
+                registrar_en_cola_sync('usuarios', 'DELETE', uid, None)
+                
                 conexion.close()
                 self.cargar_datos()
                 QMessageBox.information(self, "Éxito", "Usuario eliminado correctamente.")

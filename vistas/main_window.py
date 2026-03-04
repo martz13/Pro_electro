@@ -11,9 +11,10 @@ from vistas.cotizaciones import VistaCotizaciones
 from vistas.datos_fiscales import VistaDatosFiscales
 
 class MainWindow(QMainWindow):
-    def __init__(self, login_window):
+    def __init__(self, login_window, rol="Super admin"):
         super().__init__()
         self.login_window = login_window
+        self.rol = rol
         self.setWindowTitle("Pro Electro - Sistema de Gestión")
         self.resize(1024, 768)
         self.showMaximized()
@@ -67,6 +68,11 @@ class MainWindow(QMainWindow):
                 QPushButton:checked { border-bottom: 3px solid #3182CE; color: #2D3748; }
             """)
             btn.setCheckable(True)
+            
+            # --- MODIFICACIÓN: Ocultar botones para Vendedor ---
+            if self.rol == "Vendedor" and opcion in ["Usuarios", "Proveedores", "Datos Fiscales"]:
+                btn.setVisible(False)
+            
             if opcion == "Salir":
                 btn.clicked.connect(self.cerrar_sesion)
                 layout_menu.addStretch()
@@ -92,7 +98,7 @@ class MainWindow(QMainWindow):
         self.vista_proveedores = VistaProveedores()
         self.contenedor_vistas.addWidget(self.vista_proveedores)
         
-        self.vista_inventario = VistaInventario()
+        self.vista_inventario = VistaInventario(self.rol)
         self.contenedor_vistas.addWidget(self.vista_inventario)
         
         self.vista_cotizaciones = VistaCotizaciones()
@@ -101,11 +107,12 @@ class MainWindow(QMainWindow):
         self.vista_datos_fiscales = VistaDatosFiscales()
         self.contenedor_vistas.addWidget(self.vista_datos_fiscales)
         
-        # Conectar señales de la vista de cotizaciones para actualizar inventario
-        self.vista_cotizaciones.productos_actualizados.connect(self.actualizar_inventario)
 
         # Iniciar en la primera pestaña
-        self.cambiar_vista(0)
+        if self.rol == "Vendedor":
+            self.cambiar_vista(1)  # Inicia en Clientes
+        else:
+            self.cambiar_vista(0)
 
     def cambiar_vista(self, index):
         """Cambia la vista y actualiza los datos si es necesario"""
@@ -132,10 +139,7 @@ class MainWindow(QMainWindow):
             if btn.text() != "Salir":
                 btn.setChecked(i == index)
 
-    def actualizar_inventario(self):
-        """Actualiza la vista de inventario cuando se modifican productos desde cotizaciones"""
-        if hasattr(self, 'vista_inventario'):
-            self.vista_inventario.cargar_datos()
+
 
     def cerrar_sesion(self):
         self.login_window.show()

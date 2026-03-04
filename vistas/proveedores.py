@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QAbstractItemView, QHeaderView, QDialog, QMessageBox, QGridLayout)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from base_datos.conexion import obtener_conexion
+from base_datos.conexion import obtener_conexion, registrar_en_cola_sync
 
 class DialogoProveedor(QDialog):
     def __init__(self, parent=None, proveedor_datos=None):
@@ -107,6 +107,16 @@ class DialogoProveedor(QDialog):
             self.input_correo.text().strip(), self.input_direccion.text().strip(),
             self.input_tel_tienda.text().strip()
         )
+        
+        # Armamos el diccionario con los nombres exactos de las columnas
+        datos_dict = {
+            "nombre_empresa": datos[0],
+            "vendedor_contacto": datos[1],
+            "num_telefono": datos[2],
+            "correo": datos[3],
+            "direccion": datos[4],
+            "tel_tienda_fisica": datos[5]
+        }
 
         conexion = obtener_conexion()
         cursor = conexion.cursor()
@@ -118,16 +128,26 @@ class DialogoProveedor(QDialog):
                     direccion=?, tel_tienda_fisica=? 
                     WHERE id_prov=?
                 """, (*datos, self.proveedor_id))
+                
+                conexion.commit()
+                registrar_en_cola_sync('proveedores', 'UPDATE', self.proveedor_id, datos_dict)
+                
             else:
                 nuevo_id = self.generar_nuevo_id(cursor)
+                
+                # Para un nuevo registro, incluimos su Primary Key en el diccionario
+                datos_dict["id_prov"] = nuevo_id
+                
                 cursor.execute("""
                     INSERT INTO proveedores (
                     id_prov, nombre_empresa, vendedor_contacto, num_telefono, 
                     correo, direccion, tel_tienda_fisica
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (nuevo_id, *datos))
+                
+                conexion.commit()
+                registrar_en_cola_sync('proveedores', 'INSERT', nuevo_id, datos_dict)
             
-            conexion.commit()
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo guardar: {str(e)}")
@@ -297,6 +317,10 @@ class VistaProveedores(QWidget):
             try:
                 cursor.execute("DELETE FROM proveedores WHERE id_prov=?", (p_id,))
                 conexion.commit()
+                
+                # Registramos el movimiento en la cola
+                registrar_en_cola_sync('proveedores', 'DELETE', p_id, None)
+                
                 self.cargar_datos()
                 QMessageBox.information(self, "Éxito", "Proveedor eliminado.")
             except Exception as e:

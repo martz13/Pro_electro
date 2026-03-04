@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QAbstractItemView, QHeaderView, QDialog, QMessageBox, QGridLayout)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QColor
-from base_datos.conexion import obtener_conexion
+from base_datos.conexion import obtener_conexion, registrar_en_cola_sync
 
 class DialogoCliente(QDialog):
     def __init__(self, parent=None, cliente_datos=None):
@@ -74,13 +74,29 @@ class DialogoCliente(QDialog):
             QMessageBox.warning(self, "Error", "El Nombre Completo es obligatorio.")
             return
 
-        datos = (
+        # Separado en tupla para la consulta SQL
+        datos_tupla = (
             nombre, self.input_rfc.text().strip(), self.input_direccion.text().strip(),
             self.input_colonia.text().strip(), self.input_poblacion.text().strip(),
             self.input_cp.text().strip(), self.input_telefono.text().strip(),
             self.input_correo.text().strip(), self.input_cfdi.text().strip(),
             self.input_regimen.text().strip(), self.input_contacto.text().strip()
         )
+        
+        # Diccionario base para la sincronización
+        datos_dict = {
+            "nombre_completo": datos_tupla[0],
+            "rfc": datos_tupla[1],
+            "direccion": datos_tupla[2],
+            "colonia": datos_tupla[3],
+            "poblacion": datos_tupla[4],
+            "cp": datos_tupla[5],
+            "telefono": datos_tupla[6],
+            "correo": datos_tupla[7],
+            "cfdi": datos_tupla[8],
+            "regimen": datos_tupla[9],
+            "contacto": datos_tupla[10]
+        }
 
         conexion = obtener_conexion()
         cursor = conexion.cursor()
@@ -91,16 +107,26 @@ class DialogoCliente(QDialog):
                     nombre_completo=?, rfc=?, direccion=?, colonia=?, poblacion=?, 
                     cp=?, telefono=?, correo=?, cfdi=?, regimen=?, contacto=? 
                     WHERE id_cliente=?
-                """, (*datos, self.cliente_id))
+                """, (*datos_tupla, self.cliente_id))
+                
+                conexion.commit()
+                registrar_en_cola_sync('clientes', 'UPDATE', self.cliente_id, datos_dict)
+                
             else:
                 nuevo_id = self.generar_nuevo_id(cursor)
+                
+                # Para el INSERT es buena idea incluir su propia llave primaria en el dict
+                datos_dict["id_cliente"] = nuevo_id
+                
                 cursor.execute("""
                     INSERT INTO clientes (id_cliente, nombre_completo, rfc, direccion, colonia, 
                     poblacion, cp, telefono, correo, cfdi, regimen, contacto) 
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (nuevo_id, *datos))
+                """, (nuevo_id, *datos_tupla))
+                
+                conexion.commit()
+                registrar_en_cola_sync('clientes', 'INSERT', nuevo_id, datos_dict)
             
-            conexion.commit()
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo guardar: {str(e)}")
@@ -264,6 +290,10 @@ class VistaClientes(QWidget):
             try:
                 cursor.execute("DELETE FROM clientes WHERE id_cliente=?", (c_id,))
                 conexion.commit()
+                
+                # Registro en la cola de sincronización
+                registrar_en_cola_sync('clientes', 'DELETE', c_id, None)
+                
                 self.cargar_datos()
             except Exception as e:
                 QMessageBox.critical(self, "Error", str(e))

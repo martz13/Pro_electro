@@ -20,15 +20,26 @@ jobs:
 
       - name: Instalar dependencias
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install pyinstaller
 
-      - name: Crear ejecutable
+      - name: Crear Ejecutable Principal (Pro Electro.exe)
         run: |
-          pyinstaller --onefile --windowed --icon=recursos/logo.ico --add-data "recursos;recursos" --add-data "base_datos;base_datos" --add-data "utilidades;utilidades" --add-data "vistas;vistas" main.py
+          pyinstaller --onefile --windowed --name "Pro Electro" --icon=recursos/logo.ico --add-data "recursos;recursos" --add-data "base_datos/SQL.sql;base_datos" main.py
 
-      - name: Subir ejecutable
+      - name: Crear Ejecutable del Sincronizador (Sincronizador.exe)
+        run: |
+          pyinstaller --onefile --windowed --name "Sincronizador" --add-data "base_datos/SQL.sql;base_datos" utilidades/sincronizador.py
+
+      - name: Preparar carpeta de entrega
+        run: |
+          mkdir Entrega_Final
+          copy "dist\Pro Electro.exe" Entrega_Final\
+          copy "dist\Sincronizador.exe" Entrega_Final\
+
+      - name: Subir ejecutables a GitHub
         uses: actions/upload-artifact@v4
         with:
-          name: Pro_Electro_Windows
-          path: dist/*.exe
+          name: Pro_Electro_Sistema_Completo
+          path: Entrega_Final\*

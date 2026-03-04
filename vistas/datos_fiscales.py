@@ -2,7 +2,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QLineEdit, QTextEdit, QPushButton, QGroupBox, 
                                QGridLayout, QMessageBox)
 from PySide6.QtCore import Qt
-from base_datos.conexion import obtener_conexion
+from base_datos.conexion import obtener_conexion, registrar_en_cola_sync
 
 class VistaDatosFiscales(QWidget):
     def __init__(self):
@@ -101,11 +101,26 @@ class VistaDatosFiscales(QWidget):
         else:
             # Si por alguna razón la tabla está vacía, insertamos la fila por defecto
             try:
+                terminos_defecto = 'Dadas las condiciones comerciales actuales a nivel global, la presente COTIZACION tiene una vigencia de solamente 24 horas a partir de su fecha de emisión. En esta COTIZACIÓN, los Tiempos de Entrega expresados, son aproximados, y NO constituyen compromiso alguno de cumplimiento mientras esta no se convierta en un Pedido fincado. Así mismo, en los casos en que se finque un Pedido y se trate de Mercancia Especial & "Sobre Pedido", el Tiempo de Entrega empezará a contar a partir del Pago ó Anticipo (en su caso) acreditado. En los casos en que se expresen Tiempos de Entrega inmediatos, estos se entienden siempre Salvo Previa Venta (SPV). Pro Electro ofrece la opción de separar material, solamente con una solicitud por escrito emitida por el cliente, y por un lapso no mayor a 24 horas. Después de este tiempo, el material se regresară al almacén para su disposición normal. Así mismo esta COTIZACIÓN no se considera Pedido fincado, por lo que, si el cliente decide unilateralmente depositar cualquier cantidad de dinero antes de fincar oficialmente un Pedido y que Pro Electro haya emitido alguna Remisión & Factura, no se considerará compromiso alguno de surtimiento de mercancia que no se tenga para Entrega Inmediata Los precios ofrecidos se entienden LAB. Monterrey y su área metropolitana y la mercancia puede ser entregada en nuestras instalaciones ó a domicilio. Si fuera a domicilio, se entregaria "al pie" de la obra o domicilie solicitado y no se ofrecen maniobras especiales de subir o bajar a otros niveles a menos que se exprese por escrito otra condición. Así mismo Pre Electre no ofrece el servicio de Recolección de la mercancia entregada a domicilio, que por alguna razón el cliente solicitara cambiar por otra mercancia. No se aceptan devoluciones de mercancia. En casos excepcionales y a juicio y consideración de Pro Electro, se podria aceptar, si y solo si, que la mercancia no haya side traida exprofeso del fabricante para el cliente (mercancia sobre pedido), que venga absolutamente sin usar, en su empaque original y en excelentes condiciones. Todo esto en un plazo no mayor de 48 horas. Dicha devolución estará sujeta a un cargo no negociable del 20% del importe neto.'
+                
                 cursor.execute("""
                     INSERT INTO datos_fiscales (id, nombre_empresa, telefono, ubicacion, rfc, representante_legal, terminos_condiciones) 
-                    VALUES (1, 'PRO ELECTRO MONTERREY', '(81) 8255 2128', 'Monterrey, Nuevo León', 'GUGE9505308Q4','PRO ELECTRO','Dadas las condiciones comerciales actuales a nivel global, la presente COTIZACION tiene una vigencia de solamente 24 horas a partir de su fecha de emisión. En esta COTIZACIÓN, los Tiempos de Entrega expresados, son aproximados, y NO constituyen compromiso alguno de cumplimiento mientras esta no se convierta en un Pedido fincado. Así mismo, en los casos en que se finque un Pedido y se trate de Mercancia Especial & "Sobre Pedido", el Tiempo de Entrega empezará a contar a partir del Pago ó Anticipo (en su caso) acreditado. En los casos en que se expresen Tiempos de Entrega inmediatos, estos se entienden siempre Salvo Previa Venta (SPV). Pro Electro ofrece la opción de separar material, solamente con una solicitud por escrito emitida por el cliente, y por un lapso no mayor a 24 horas. Después de este tiempo, el material se regresară al almacén para su disposición normal. Así mismo esta COTIZACIÓN no se considera Pedido fincado, por lo que, si el cliente decide unilateralmente depositar cualquier cantidad de dinero antes de fincar oficialmente un Pedido y que Pro Electro haya emitido alguna Remisión & Factura, no se considerará compromiso alguno de surtimiento de mercancia que no se tenga para Entrega Inmediata Los precios ofrecidos se entienden LAB. Monterrey y su área metropolitana y la mercancia puede ser entregada en nuestras instalaciones ó a domicilio. Si fuera a domicilio, se entregaria "al pie" de la obra o domicilie solicitado y no se ofrecen maniobras especiales de subir o bajar a otros niveles a menos que se exprese por escrito otra condición. Así mismo Pre Electre no ofrece el servicio de Recolección de la mercancia entregada a domicilio, que por alguna razón el cliente solicitara cambiar por otra mercancia. No se aceptan devoluciones de mercancia. En casos excepcionales y a juicio y consideración de Pro Electro, se podria aceptar, si y solo si, que la mercancia no haya side traida exprofeso del fabricante para el cliente (mercancia sobre pedido), que venga absolutamente sin usar, en su empaque original y en excelentes condiciones. Todo esto en un plazo no mayor de 48 horas. Dicha devolución estará sujeta a un cargo no negociable del 20% del importe neto.')
-                """)
+                    VALUES (1, 'PRO ELECTRO MONTERREY', '(81) 8255 2128', 'Monterrey, Nuevo León', 'GUGE9505308Q4','PRO ELECTRO', ?)
+                """, (terminos_defecto,))
+                
+                datos_dict = {
+                    "id": 1,
+                    "nombre_empresa": "PRO ELECTRO MONTERREY",
+                    "telefono": "(81) 8255 2128",
+                    "ubicacion": "Monterrey, Nuevo León",
+                    "rfc": "GUGE9505308Q4",
+                    "representante_legal": "PRO ELECTRO",
+                    "terminos_condiciones": terminos_defecto
+                }
+                
                 conexion.commit()
+                registrar_en_cola_sync('datos_fiscales', 'INSERT', 1, datos_dict)
+                
                 self.cargar_datos() # Volvemos a llamar para llenar la interfaz
             except Exception as e:
                 print(f"Error al inicializar datos fiscales: {e}")
@@ -131,7 +146,18 @@ class VistaDatosFiscales(QWidget):
                 WHERE id=1
             """, (nombre, telefono, ubicacion, rfc, representante, terminos))
             
+            datos_dict = {
+                "nombre_empresa": nombre,
+                "telefono": telefono,
+                "ubicacion": ubicacion,
+                "rfc": rfc,
+                "representante_legal": representante,
+                "terminos_condiciones": terminos
+            }
+            
             conexion.commit()
+            registrar_en_cola_sync('datos_fiscales', 'UPDATE', 1, datos_dict)
+            
             QMessageBox.information(self, "Éxito", "Los datos fiscales se han guardado correctamente.")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudieron guardar los datos:\n{str(e)}")

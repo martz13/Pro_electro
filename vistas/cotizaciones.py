@@ -5,11 +5,11 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QScrollArea, QFrame, QSizePolicy)
 from PySide6.QtCore import Qt, QDate, Signal
 from PySide6.QtGui import QColor
-from base_datos.conexion import obtener_conexion
+from base_datos.conexion import obtener_conexion, registrar_en_cola_sync
 from utilidades.generador_pdf import generar_pdf_cotizacion
 
 # ==========================================
-# 0. DIÁLOGO PARA SELECCIONAR PRODUCTO (BÚSQUEDA MÚLTIPLE)
+# 0. DIÁLOGOS PARA SELECCIÓN (PRODUCTOS Y CLIENTES)
 # ==========================================
 class DialogoSeleccionarProducto(QDialog):
     def __init__(self, parent=None, resultados=[]):
@@ -29,8 +29,9 @@ class DialogoSeleccionarProducto(QDialog):
         layout.addWidget(lbl_info)
 
         self.tabla = QTableWidget()
-        self.tabla.setColumnCount(5)
-        self.tabla.setHorizontalHeaderLabels(["Código", "Descripción", "Stock", "UM", "Precio"])
+        # --- MODIFICACIÓN: Solo dejamos 2 columnas ---
+        self.tabla.setColumnCount(2)
+        self.tabla.setHorizontalHeaderLabels(["Código", "Descripción"])
         self.tabla.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.tabla.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tabla.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -45,10 +46,11 @@ class DialogoSeleccionarProducto(QDialog):
         self.tabla.setRowCount(len(resultados))
         for fila, prod in enumerate(resultados):
             self.tabla.setItem(fila, 0, QTableWidgetItem(str(prod[0])))
-            self.tabla.setItem(fila, 1, QTableWidgetItem(str(prod[1])))
-            self.tabla.setItem(fila, 2, QTableWidgetItem(str(prod[2])))
-            self.tabla.setItem(fila, 3, QTableWidgetItem(str(prod[3])))
-            self.tabla.setItem(fila, 4, QTableWidgetItem(f"${prod[4]:.2f}"))
+            
+            item_desc = QTableWidgetItem(str(prod[1]))
+            item_desc.setToolTip(str(prod[1]))
+            self.tabla.setItem(fila, 1, item_desc)
+            # Ya no insertamos stock, um, ni precio aquí.
 
         btn_seleccionar = QPushButton("Seleccionar Producto")
         btn_seleccionar.setObjectName("botonPrincipal")
@@ -63,6 +65,57 @@ class DialogoSeleccionarProducto(QDialog):
             self.accept()
         else:
             QMessageBox.warning(self, "Aviso", "Por favor, selecciona un producto de la lista.")
+# --- NUEVO DIÁLOGO PARA CLIENTES ---
+class DialogoSeleccionarCliente(QDialog):
+    def __init__(self, parent=None, resultados=[]):
+        super().__init__(parent)
+        self.setWindowTitle("Seleccionar Cliente")
+        self.setFixedSize(600, 350)
+        self.setModal(True)
+        self.cliente_seleccionado = None
+        self.resultados = resultados
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(15)
+        
+        lbl_info = QLabel("Se encontraron múltiples coincidencias. Selecciona el cliente correcto:")
+        lbl_info.setObjectName("labelTitulo")
+        layout.addWidget(lbl_info)
+
+        self.tabla = QTableWidget()
+        self.tabla.setColumnCount(3)
+        self.tabla.setHorizontalHeaderLabels(["ID", "Nombre Completo", "RFC"])
+        self.tabla.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tabla.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tabla.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tabla.setAlternatingRowColors(True)
+        self.tabla.setStyleSheet("""
+            QTableWidget { alternate-background-color: #F9FAFB; }
+            QTableWidget::item:selected { background-color: #3498db; color: white; }
+            QTableWidget::item:selected:!active { background-color: #3498db; color: white; }
+        """)
+        layout.addWidget(self.tabla)
+
+        self.tabla.setRowCount(len(resultados))
+        for fila, cli in enumerate(resultados):
+            self.tabla.setItem(fila, 0, QTableWidgetItem(str(cli[0])))
+            self.tabla.setItem(fila, 1, QTableWidgetItem(str(cli[1])))
+            self.tabla.setItem(fila, 2, QTableWidgetItem(str(cli[2])))
+
+        btn_seleccionar = QPushButton("Seleccionar Cliente")
+        btn_seleccionar.setObjectName("botonPrincipal")
+        btn_seleccionar.setMinimumHeight(45)
+        btn_seleccionar.clicked.connect(self.seleccionar)
+        layout.addWidget(btn_seleccionar)
+
+    def seleccionar(self):
+        fila = self.tabla.currentRow()
+        if fila >= 0:
+            self.cliente_seleccionado = self.resultados[fila]
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Aviso", "Por favor, selecciona un cliente de la lista.")
 
 # ==========================================
 # 1. DIÁLOGO PARA CREAR/EDITAR COTIZACIÓN
@@ -77,6 +130,8 @@ class DialogoCotizacion(QDialog):
         self.setWindowFlags(self.windowFlags() | Qt.WindowMaximizeButtonHint)
         self.setWindowState(Qt.WindowMaximized)
         self.setModal(True)
+        
+        self.cliente_seleccionado = None # Aquí guardaremos los datos del cliente
 
         # 1. LAYOUT BASE
         layout_base = QVBoxLayout(self)
@@ -85,7 +140,6 @@ class DialogoCotizacion(QDialog):
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True) 
         scroll_area.setFrameShape(QFrame.NoFrame) 
-        # Permitir scroll horizontal automático cuando sea necesario
         scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         contenedor_scroll = QWidget()
@@ -106,8 +160,7 @@ class DialogoCotizacion(QDialog):
         scroll_area.setWidget(contenedor_scroll)
         layout_base.addWidget(scroll_area)
 
-        self.cargar_clientes()
-        self.cargar_vendedores()  # Nuevo método para cargar usuarios
+        self.cargar_vendedores()
 
         if self.cotizacion_id:
             self.cargar_cotizacion_existente()
@@ -124,18 +177,30 @@ class DialogoCotizacion(QDialog):
         grid.setContentsMargins(25, 35, 25, 25)
         grid.setSpacing(20)
 
-        lbl_cliente = QLabel("Seleccionar Cliente:"); lbl_cliente.setObjectName("labelTitulo")
+        lbl_cliente = QLabel("Buscar Cliente:"); lbl_cliente.setObjectName("labelTitulo")
         lbl_fecha = QLabel("Fecha:"); lbl_fecha.setObjectName("labelTitulo")
         lbl_folio = QLabel("Folio (Auto):"); lbl_folio.setObjectName("labelTitulo")
         lbl_vendedor = QLabel("Vendedor:"); lbl_vendedor.setObjectName("labelTitulo")
         lbl_oc = QLabel("OC (Orden Compra):"); lbl_oc.setObjectName("labelTitulo")
         lbl_obra = QLabel("Obra:"); lbl_obra.setObjectName("labelTitulo")
 
+        # --- MODIFICACIÓN 3: Buscador de clientes ---
         grid.addWidget(lbl_cliente, 0, 0)
-        self.combo_cliente = QComboBox()
-        self.combo_cliente.setMinimumHeight(42)
-        self.combo_cliente.currentIndexChanged.connect(self.mostrar_datos_cliente)
-        grid.addWidget(self.combo_cliente, 0, 1, 1, 3)
+        
+        layout_buscador_cliente = QHBoxLayout()
+        self.input_buscar_cliente = QLineEdit()
+        self.input_buscar_cliente.setPlaceholderText("🔍 Buscar por ID o Nombre y presionar Enter...")
+        self.input_buscar_cliente.setMinimumHeight(42)
+        self.input_buscar_cliente.returnPressed.connect(self.buscar_cliente)
+        layout_buscador_cliente.addWidget(self.input_buscar_cliente)
+
+        btn_buscar_cliente = QPushButton("Buscar")
+        btn_buscar_cliente.setObjectName("botonAgregar")
+        btn_buscar_cliente.setMinimumHeight(42)
+        btn_buscar_cliente.clicked.connect(self.buscar_cliente)
+        layout_buscador_cliente.addWidget(btn_buscar_cliente)
+
+        grid.addLayout(layout_buscador_cliente, 0, 1, 1, 3)
 
         self.lbl_info_cliente = QLabel("Nombre: -\nRFC: -\nDirección: -")
         self.lbl_info_cliente.setStyleSheet("color: #4A5568; font-size: 14px; background-color: #F7FAFC; padding: 12px; border-radius: 6px; border: 1px dashed #CBD5E0;")
@@ -156,7 +221,6 @@ class DialogoCotizacion(QDialog):
         grid.addWidget(self.input_folio, 2, 3)
 
         grid.addWidget(lbl_vendedor, 3, 0)
-        # Reemplazamos QLineEdit por QComboBox
         self.combo_vendedor = QComboBox()
         self.combo_vendedor.setMinimumHeight(42)
         grid.addWidget(self.combo_vendedor, 3, 1)
@@ -201,20 +265,20 @@ class DialogoCotizacion(QDialog):
         self.tabla_prod = QTableWidget()
         self.tabla_prod.setMinimumHeight(500) 
         
-        # Agregamos columna "Disponibilidad" después de "Quitar"
-        columnas = ["Código", "Descripción", "Cantidad", "UM", "Precio Unitario", "Monto", "Quitar", "Disponibilidad"]
+        # --- MODIFICACIÓN: Agregado "Stock" a la vista de la tabla ---
+        columnas = ["Código", "Descripción", "Stock", "Cantidad", "UM", "Precio Unitario", "Monto", "Quitar", "Disponibilidad"]
         self.tabla_prod.setColumnCount(len(columnas))
         self.tabla_prod.setHorizontalHeaderLabels(columnas)
         
-        # Ajuste de anchos
-        self.tabla_prod.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)  # Descripción se estira
+        self.tabla_prod.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch) 
         self.tabla_prod.setColumnWidth(0, 150) 
-        self.tabla_prod.setColumnWidth(2, 140) 
-        self.tabla_prod.setColumnWidth(3, 100) 
-        self.tabla_prod.setColumnWidth(4, 150) 
-        self.tabla_prod.setColumnWidth(5, 150) 
-        self.tabla_prod.setColumnWidth(6, 120)  # Quitar
-        self.tabla_prod.setColumnWidth(7, 130)  # Disponibilidad
+        self.tabla_prod.setColumnWidth(2, 80)   # Stock
+        self.tabla_prod.setColumnWidth(3, 110)  # Cantidad
+        self.tabla_prod.setColumnWidth(4, 80)   # UM
+        self.tabla_prod.setColumnWidth(5, 120)  # Precio
+        self.tabla_prod.setColumnWidth(6, 120)  # Monto
+        self.tabla_prod.setColumnWidth(7, 100)  # Quitar
+        self.tabla_prod.setColumnWidth(8, 130)  # Disp
         
         self.tabla_prod.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tabla_prod.setAlternatingRowColors(True)
@@ -273,19 +337,34 @@ class DialogoCotizacion(QDialog):
     # FUNCIONES LÓGICAS
     # ========================================================
     
-    def cargar_clientes(self):
-        self.combo_cliente.clear()
-        self.combo_cliente.addItem("--- Selecciona un cliente ---", userData=None)
+    def buscar_cliente(self):
+        texto = self.input_buscar_cliente.text().strip()
+        if not texto:
+            QMessageBox.warning(self, "Aviso", "Ingresa un ID o Nombre para buscar al cliente.")
+            return
+
+        filtro = f"%{texto}%"
         conexion = obtener_conexion()
         cursor = conexion.cursor()
-        cursor.execute("SELECT id_cliente, nombre_completo, rfc, direccion, telefono FROM clientes")
-        for c in cursor.fetchall():
-            texto = f"{c[0]} - {c[1]}"
-            self.combo_cliente.addItem(texto, userData=c)
+        cursor.execute("SELECT id_cliente, nombre_completo, rfc, direccion, telefono FROM clientes WHERE id_cliente LIKE ? OR nombre_completo LIKE ?", (filtro, filtro))
+        resultados = cursor.fetchall()
         conexion.close()
 
+        if not resultados:
+            QMessageBox.warning(self, "Sin resultados", "No se encontró ningún cliente.")
+        elif len(resultados) == 1:
+            self.set_cliente_seleccionado(resultados[0])
+        else:
+            dialogo = DialogoSeleccionarCliente(self, resultados)
+            if dialogo.exec() and dialogo.cliente_seleccionado:
+                self.set_cliente_seleccionado(dialogo.cliente_seleccionado)
+
+    def set_cliente_seleccionado(self, datos):
+        self.cliente_seleccionado = datos
+        self.input_buscar_cliente.setText(datos[1]) # Ponemos el nombre en el buscador
+        self.lbl_info_cliente.setText(f"Nombre: {datos[1]} | RFC: {datos[2]}\nDirección: {datos[3]} | Tel: {datos[4]}")
+
     def cargar_vendedores(self):
-        """Carga los nombres de los usuarios (vendedores) desde la tabla usuarios"""
         self.combo_vendedor.clear()
         conexion = obtener_conexion()
         cursor = conexion.cursor()
@@ -295,13 +374,6 @@ class DialogoCotizacion(QDialog):
         conexion.close()
         if self.combo_vendedor.count() == 0:
             self.combo_vendedor.addItem("No hay vendedores registrados")
-
-    def mostrar_datos_cliente(self):
-        datos = self.combo_cliente.currentData()
-        if datos:
-            self.lbl_info_cliente.setText(f"Nombre: {datos[1]} | RFC: {datos[2]}\nDirección: {datos[3]} | Tel: {datos[4]}")
-        else:
-            self.lbl_info_cliente.setText("Nombre: -\nRFC: -\nDirección: -")
 
     def generar_folio(self):
         conexion = obtener_conexion()
@@ -337,56 +409,46 @@ class DialogoCotizacion(QDialog):
                 self.input_buscar_prod.clear()
 
     def agregar_producto_a_tabla(self, datos_prod, cantidad_inicial=1.0):
-        codigo, desc, stock_maximo, um, precio = datos_prod[0], datos_prod[1], float(datos_prod[2]), datos_prod[3], float(datos_prod[4])
+        # Desempaquetamos el stock desde los datos consultados
+        codigo, desc, stock_inv, um, precio = datos_prod[0], datos_prod[1], datos_prod[2], datos_prod[3], float(datos_prod[4])
         
-        if stock_maximo <= 0:
-            QMessageBox.warning(self, "Sin Stock", f"El producto '{desc}' se encuentra agotado en inventario.")
-            return
-
         for fila in range(self.tabla_prod.rowCount()):
             if self.tabla_prod.item(fila, 0).text() == codigo:
-                spin = self.tabla_prod.cellWidget(fila, 2)
-                nueva_cant = spin.value() + float(cantidad_inicial)
-                if nueva_cant > stock_maximo:
-                    QMessageBox.warning(self, "Stock Insuficiente", f"Solo hay {stock_maximo} disponibles. No se puede agregar más.")
-                    spin.setValue(stock_maximo)
-                else:
-                    spin.setValue(nueva_cant)
+                spin = self.tabla_prod.cellWidget(fila, 3) # Cantidad es columna 3
+                spin.setValue(spin.value() + float(cantidad_inicial))
                 return
 
         fila = self.tabla_prod.rowCount()
         self.tabla_prod.insertRow(fila)
 
-        # Items de texto
         items = [
             QTableWidgetItem(str(codigo)),
             QTableWidgetItem(str(desc)),
-            None,  # placeholder para spin de cantidad
+            QTableWidgetItem(str(stock_inv)), # Columna 2: Stock
+            None,  
             QTableWidgetItem(str(um)),
             QTableWidgetItem(f"{precio:.2f}"),
             QTableWidgetItem("0.00"),
-            None,  # placeholder para botón quitar
-            None   # placeholder para combo disponibilidad
+            None,  
+            None   
         ]
+
+        items[1].setToolTip(str(desc))
 
         for col, item in enumerate(items):
             if item:
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                item.setTextAlignment(Qt.AlignVCenter | (Qt.AlignCenter if col in [0, 3, 4, 5] else Qt.AlignLeft))
+                item.setTextAlignment(Qt.AlignVCenter | (Qt.AlignCenter if col in [0, 2, 4, 5, 6] else Qt.AlignLeft))
                 self.tabla_prod.setItem(fila, col, item)
 
-        # SpinBox para cantidad
         spin_cantidad = QDoubleSpinBox()
         spin_cantidad.setMinimumHeight(40) 
         spin_cantidad.setStyleSheet("font-size: 15px;")
-        spin_cantidad.setRange(0.01, 99999.00) 
-        val_inicial = float(cantidad_inicial)
-        if val_inicial > stock_maximo: val_inicial = stock_maximo
-        spin_cantidad.setValue(val_inicial)
-        spin_cantidad.valueChanged.connect(lambda val, sp=spin_cantidad, mx=stock_maximo: self.validar_stock_y_actualizar(sp, mx))
-        self.tabla_prod.setCellWidget(fila, 2, spin_cantidad)
+        spin_cantidad.setRange(0.01, 999999.00) 
+        spin_cantidad.setValue(float(cantidad_inicial))
+        spin_cantidad.valueChanged.connect(lambda val, f=fila: self.actualizar_fila_y_totales(f))
+        self.tabla_prod.setCellWidget(fila, 3, spin_cantidad) # Columna 3
 
-        # Botón Quitar
         btn_quitar = QPushButton("❌ Quitar")
         btn_quitar.setObjectName("botonEliminar")
         btn_quitar.setMinimumHeight(35)
@@ -395,35 +457,22 @@ class DialogoCotizacion(QDialog):
         layout_btn = QHBoxLayout(widget_btn)
         layout_btn.setContentsMargins(10, 5, 10, 5)
         layout_btn.addWidget(btn_quitar)
-        self.tabla_prod.setCellWidget(fila, 6, widget_btn)
+        self.tabla_prod.setCellWidget(fila, 7, widget_btn) # Columna 7
 
-        # Combo para disponibilidad
         combo_disponibilidad = QComboBox()
         combo_disponibilidad.addItems(["Disponible", "Sobrepedido"])
         combo_disponibilidad.setCurrentText("Disponible")
         combo_disponibilidad.setMinimumHeight(35)
-        self.tabla_prod.setCellWidget(fila, 7, combo_disponibilidad)
+        self.tabla_prod.setCellWidget(fila, 8, combo_disponibilidad) # Columna 8
 
         self.actualizar_fila_y_totales(fila)
 
-    def validar_stock_y_actualizar(self, spin, max_stock):
-        spin.blockSignals(True)
-        if spin.value() > max_stock:
-            QMessageBox.warning(self, "Stock Excedido", f"El inventario actual solo cuenta con {max_stock} unidades de este producto.")
-            spin.setValue(max_stock)
-        spin.blockSignals(False)
-        
-        for fila in range(self.tabla_prod.rowCount()):
-            if self.tabla_prod.cellWidget(fila, 2) == spin:
-                self.actualizar_fila_y_totales(fila)
-                break
-
     def actualizar_fila_y_totales(self, fila):
         try:
-            precio = float(self.tabla_prod.item(fila, 4).text())
-            cantidad = self.tabla_prod.cellWidget(fila, 2).value()
+            precio = float(self.tabla_prod.item(fila, 5).text()) # Columna 5
+            cantidad = self.tabla_prod.cellWidget(fila, 3).value() # Columna 3
             monto = precio * cantidad
-            self.tabla_prod.item(fila, 5).setText(f"{monto:.2f}")
+            self.tabla_prod.item(fila, 6).setText(f"{monto:.2f}") # Columna 6
             self.calcular_totales()
         except Exception:
             pass
@@ -431,11 +480,20 @@ class DialogoCotizacion(QDialog):
     def eliminar_fila(self, fila):
         self.tabla_prod.removeRow(fila)
         self.calcular_totales()
+        for i in range(self.tabla_prod.rowCount()):
+            spin = self.tabla_prod.cellWidget(i, 3) # Columna 3
+            spin.valueChanged.disconnect()
+            spin.valueChanged.connect(lambda val, f=i: self.actualizar_fila_y_totales(f))
+            
+            btn_widget = self.tabla_prod.cellWidget(i, 7) # Columna 7
+            btn = btn_widget.layout().itemAt(0).widget()
+            btn.clicked.disconnect()
+            btn.clicked.connect(lambda checked, f=i: self.eliminar_fila(f))
 
     def calcular_totales(self):
         subtotal = 0.0
         for fila in range(self.tabla_prod.rowCount()):
-            monto_str = self.tabla_prod.item(fila, 5).text()
+            monto_str = self.tabla_prod.item(fila, 6).text() # Columna 6
             subtotal += float(monto_str) if monto_str else 0.0
         
         iva = subtotal * 0.16
@@ -444,22 +502,21 @@ class DialogoCotizacion(QDialog):
         self.lbl_subtotal.setText(f"Subtotal: ${subtotal:,.2f}")
         self.lbl_iva.setText(f"IVA (16%): ${iva:,.2f}")
         self.lbl_total.setText(f"Total: ${total:,.2f}")
-        self.monto_total_guardar = total 
+        self.monto_total_guardar = total
 
     def guardar_cotizacion(self):
         if self.tabla_prod.rowCount() == 0:
             QMessageBox.warning(self, "Error", "Debes agregar al menos un producto.")
             return
 
-        cliente_datos = self.combo_cliente.currentData()
-        if not cliente_datos:
+        if not self.cliente_seleccionado:
             QMessageBox.warning(self, "Error", "Debes seleccionar un cliente.")
             return
 
         fecha = self.input_fecha.date().toString("yyyy-MM-dd")
         folio = self.input_folio.text()
-        cliente_id = cliente_datos[0]
-        vendedor = self.combo_vendedor.currentText()  # Nombre del vendedor seleccionado
+        cliente_id = self.cliente_seleccionado[0]
+        vendedor = self.combo_vendedor.currentText() 
         oc = self.input_oc.text().strip()
         obra = self.input_obra.text().strip()
         estado = self.combo_estado.currentText()
@@ -469,54 +526,88 @@ class DialogoCotizacion(QDialog):
 
         try:
             if self.cotizacion_id:
-                # Restaurar stock de productos anteriores
-                cursor.execute("SELECT codigo_producto, cantidad FROM cotizaciones_detalle WHERE cotizacion_id=?", (self.cotizacion_id,))
-                viejos_productos = cursor.fetchall()
-                for v_cod, v_cant in viejos_productos:
-                    cursor.execute("UPDATE inventario SET stock = stock + ? WHERE codigo_producto=?", (v_cant, v_cod))
-
+                # 1. Actualizar el registro principal (Maestro)
                 cursor.execute("""
                     UPDATE cotizaciones SET fecha=?, cliente_id=?, vendedor=?, oc=?, obra=?, estado=?, monto_total=?
                     WHERE id_cotizacion=?
                 """, (fecha, cliente_id, vendedor, oc, obra, estado, self.monto_total_guardar, self.cotizacion_id))
                 
+                datos_cotizacion = {
+                    "fecha": fecha,
+                    "cliente_id": cliente_id,
+                    "vendedor": vendedor,
+                    "oc": oc,
+                    "obra": obra,
+                    "estado": estado,
+                    "monto_total": self.monto_total_guardar
+                }
+                conexion.commit()
+                registrar_en_cola_sync('cotizaciones', 'UPDATE', self.cotizacion_id, datos_cotizacion)
+                
+                # 2. Recuperar IDs de los detalles viejos para eliminarlos individualmente en la nube
+                cursor.execute("SELECT rowid FROM cotizaciones_detalle WHERE cotizacion_id=?", (self.cotizacion_id,))
+                detalles_viejos = cursor.fetchall()
+                
+                # Borrado masivo local
                 cursor.execute("DELETE FROM cotizaciones_detalle WHERE cotizacion_id=?", (self.cotizacion_id,))
+                conexion.commit()
+                
+                # Registrar borrado individual para la API
+                for det in detalles_viejos:
+                    registrar_en_cola_sync('cotizaciones_detalle', 'DELETE', det[0], None)
+                
                 id_cotizacion_actual = self.cotizacion_id
             else:
+                # 1. Insertar el registro principal (Maestro)
                 cursor.execute("""
                     INSERT INTO cotizaciones (folio, fecha, cliente_id, vendedor, oc, obra, estado, monto_total)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (folio, fecha, cliente_id, vendedor, oc, obra, estado, self.monto_total_guardar))
+                
                 id_cotizacion_actual = cursor.lastrowid
+                datos_cotizacion = {
+                    "folio": folio,
+                    "fecha": fecha,
+                    "cliente_id": cliente_id,
+                    "vendedor": vendedor,
+                    "oc": oc,
+                    "obra": obra,
+                    "estado": estado,
+                    "monto_total": self.monto_total_guardar
+                }
+                conexion.commit()
+                registrar_en_cola_sync('cotizaciones', 'INSERT', id_cotizacion_actual, datos_cotizacion)
 
-            # Insertar nuevo detalle
+            # 3. Insertar nuevos detalles (registro por registro)
             for fila in range(self.tabla_prod.rowCount()):
                 codigo = self.tabla_prod.item(fila, 0).text()
                 desc = self.tabla_prod.item(fila, 1).text()
-                cantidad = self.tabla_prod.cellWidget(fila, 2).value()
-                um = self.tabla_prod.item(fila, 3).text()
-                precio_u = float(self.tabla_prod.item(fila, 4).text())
-                monto = float(self.tabla_prod.item(fila, 5).text())
-                disponibilidad = self.tabla_prod.cellWidget(fila, 7).currentText()  # Obtener valor del combo
+                cantidad = self.tabla_prod.cellWidget(fila, 3).value() 
+                um = self.tabla_prod.item(fila, 4).text() 
+                precio_u = float(self.tabla_prod.item(fila, 5).text()) 
+                monto = float(self.tabla_prod.item(fila, 6).text()) 
+                disponibilidad = self.tabla_prod.cellWidget(fila, 8).currentText() 
 
                 cursor.execute("""
                     INSERT INTO cotizaciones_detalle (cotizacion_id, codigo_producto, descripcion, cantidad, um, precio_unitario, monto, disponibilidad)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (id_cotizacion_actual, codigo, desc, cantidad, um, precio_u, monto, disponibilidad))
-
-                cursor.execute("UPDATE inventario SET stock = stock - ? WHERE codigo_producto=?", (cantidad, codigo))
-
-            conexion.commit()
-            QMessageBox.information(self, "Éxito", "Cotización guardada y stock actualizado correctamente.")
-            
-            # Emitir señal para actualizar inventario
-            parent = self.parent()
-            while parent:
-                if hasattr(parent, 'productos_actualizados'):
-                    parent.productos_actualizados.emit()
-                    break
-                parent = parent.parent()
                 
+                id_detalle = cursor.lastrowid
+                datos_detalle = {
+                    "cotizacion_id": id_cotizacion_actual,
+                    "codigo_producto": codigo,
+                    "descripcion": desc,
+                    "cantidad": cantidad,
+                    "um": um,
+                    "precio_unitario": precio_u,
+                    "monto": monto,
+                    "disponibilidad": disponibilidad
+                }
+                conexion.commit()
+                registrar_en_cola_sync('cotizaciones_detalle', 'INSERT', id_detalle, datos_detalle)
+
+            QMessageBox.information(self, "Éxito", "Cotización guardada correctamente.")
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Fallo al guardar:\n{str(e)}")
@@ -534,14 +625,11 @@ class DialogoCotizacion(QDialog):
             self.input_folio.setText(encabezado[0])
             self.input_fecha.setDate(QDate.fromString(encabezado[1], "yyyy-MM-dd"))
             
-            # Seleccionar cliente
-            for i in range(self.combo_cliente.count()):
-                datos = self.combo_cliente.itemData(i)
-                if datos and datos[0] == encabezado[2]:
-                    self.combo_cliente.setCurrentIndex(i)
-                    break
+            cursor.execute("SELECT id_cliente, nombre_completo, rfc, direccion, telefono FROM clientes WHERE id_cliente=?", (encabezado[2],))
+            cliente = cursor.fetchone()
+            if cliente:
+                self.set_cliente_seleccionado(cliente)
             
-            # Seleccionar vendedor por nombre
             vendedor_nombre = encabezado[3]
             index = self.combo_vendedor.findText(vendedor_nombre)
             if index >= 0:
@@ -551,9 +639,9 @@ class DialogoCotizacion(QDialog):
             self.input_obra.setText(encabezado[5] if encabezado[5] else "")
             self.combo_estado.setCurrentText(encabezado[6])
 
-        # Cargar detalle incluyendo disponibilidad
+        # Hacemos un LEFT JOIN para obtener el stock actual del inventario, o 'N/D' si ya no existe
         query_detalle = """
-            SELECT d.codigo_producto, d.descripcion, d.cantidad, d.um, d.precio_unitario, IFNULL(i.stock, 0), d.disponibilidad
+            SELECT d.codigo_producto, d.descripcion, d.cantidad, d.um, d.precio_unitario, d.disponibilidad, IFNULL(i.stock, 'N/D')
             FROM cotizaciones_detalle d
             LEFT JOIN inventario i ON d.codigo_producto = i.codigo_producto
             WHERE d.cotizacion_id=?
@@ -562,15 +650,13 @@ class DialogoCotizacion(QDialog):
         detalles = cursor.fetchall()
         
         for det in detalles:
-            cod, desc, cant_guardada, um, precio, stock_actual, disp = det
-            stock_maximo_real = float(stock_actual) + float(cant_guardada)
+            cod, desc, cant_guardada, um, precio, disp, stock_inv = det
             
-            datos_prod = (cod, desc, stock_maximo_real, um, precio)
+            datos_prod = (cod, desc, stock_inv, um, precio)
             self.agregar_producto_a_tabla(datos_prod, cant_guardada)
             
-            # Establecer la disponibilidad en el combo (última fila agregada)
             fila = self.tabla_prod.rowCount() - 1
-            combo = self.tabla_prod.cellWidget(fila, 7)
+            combo = self.tabla_prod.cellWidget(fila, 8) # Columna 8
             if combo:
                 combo.setCurrentText(disp)
 
@@ -580,7 +666,6 @@ class DialogoCotizacion(QDialog):
 # 2. VISTA PRINCIPAL (HISTORIAL)
 # ==========================================
 class VistaCotizaciones(QWidget):
-    productos_actualizados = Signal() 
     
     def __init__(self):
         super().__init__()
@@ -618,20 +703,17 @@ class VistaCotizaciones(QWidget):
         self.tabla.setColumnCount(len(columnas))
         self.tabla.setHorizontalHeaderLabels(columnas)
         
-        # Configurar el estiramiento de columnas para adaptarse al ancho de la pantalla
         header = self.tabla.horizontalHeader()
         header.setStretchLastSection(False)
-        # Asignar modos de redimensionamiento
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  # ID se ajusta al contenido
-        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  # Fecha
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  # Folio
-        header.setSectionResizeMode(3, QHeaderView.Stretch)           # Cliente ocupa espacio extra
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  # Vendedor
-        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Estado
-        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  # Monto Total
-        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  # Acciones
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)  
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)  
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)  
+        header.setSectionResizeMode(3, QHeaderView.Stretch)           
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)  
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  
+        header.setSectionResizeMode(6, QHeaderView.ResizeToContents)  
+        header.setSectionResizeMode(7, QHeaderView.ResizeToContents)  
         
-        # Anchos mínimos para evitar que se achiquen demasiado
         self.tabla.setColumnWidth(0, 80)
         self.tabla.setColumnWidth(1, 100)
         self.tabla.setColumnWidth(2, 100)
@@ -690,7 +772,6 @@ class VistaCotizaciones(QWidget):
                 item.setTextAlignment(Qt.AlignVCenter | (Qt.AlignCenter if col in [0, 1, 2, 5, 6] else Qt.AlignLeft))
                 self.tabla.setItem(fila, col, item)
 
-            # Widget de Acciones
             widget_acciones = QWidget()
             layout_acciones = QHBoxLayout(widget_acciones)
             layout_acciones.setContentsMargins(15, 0, 15, 0)
@@ -758,24 +839,29 @@ class VistaCotizaciones(QWidget):
 
     def eliminar_cotizacion(self, c_id, folio):
         respuesta = QMessageBox.question(self, "Confirmar Eliminación", 
-                                         f"¿Eliminar permanentemente la cotización {folio} y RESTAURAR el stock?",
+                                         f"¿Eliminar permanentemente la cotización {folio}?",
                                          QMessageBox.Yes | QMessageBox.No)
         if respuesta == QMessageBox.Yes:
             conexion = obtener_conexion()
             cursor = conexion.cursor()
             try:
-                cursor.execute("SELECT codigo_producto, cantidad FROM cotizaciones_detalle WHERE cotizacion_id=?", (c_id,))
-                productos_a_devolver = cursor.fetchall()
-                for cod, cant in productos_a_devolver:
-                    cursor.execute("UPDATE inventario SET stock = stock + ? WHERE codigo_producto=?", (cant, cod))
+                # 1. Recuperar los IDs de los detalles afectados antes de eliminarlos
+                cursor.execute("SELECT rowid FROM cotizaciones_detalle WHERE cotizacion_id=?", (c_id,))
+                detalles_afectados = cursor.fetchall()
 
+                # 2. Ejecutar la eliminación masiva en el SQLite local
                 cursor.execute("DELETE FROM cotizaciones_detalle WHERE cotizacion_id=?", (c_id,))
                 cursor.execute("DELETE FROM cotizaciones WHERE id_cotizacion=?", (c_id,))
                 conexion.commit()
                 
-                self.productos_actualizados.emit()
-                QMessageBox.information(self, "Éxito", "Cotización eliminada y stock restaurado.")
+                # 3. Sincronizar la eliminación de los detalles uno por uno
+                for det in detalles_afectados:
+                    registrar_en_cola_sync('cotizaciones_detalle', 'DELETE', det[0], None)
                 
+                # 4. Sincronizar la eliminación de la cotización principal
+                registrar_en_cola_sync('cotizaciones', 'DELETE', c_id, None)
+                
+                QMessageBox.information(self, "Éxito", "Cotización eliminada correctamente.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"No se pudo eliminar: {str(e)}")
             finally:

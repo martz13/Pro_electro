@@ -3,6 +3,7 @@ import os
 from PySide6.QtWidgets import QApplication
 from base_datos.conexion import inicializar_bd
 from vistas.login import LoginWindow
+from utilidades.auto_inicio import configurar_inicio_automatico
 
 
 def resource_path(relative_path):
@@ -15,8 +16,9 @@ def resource_path(relative_path):
 
 if __name__ == "__main__":
     inicializar_bd()
-
+    configurar_inicio_automatico()
     app = QApplication(sys.argv)
+    
 
     ruta_estilos = resource_path("recursos/estilos.qss")
     if os.path.exists(ruta_estilos):
