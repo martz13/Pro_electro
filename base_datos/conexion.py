@@ -82,23 +82,40 @@ def inicializar_bd():
     if os.path.exists(RUTA_SQL_ORIGINAL):
         with open(RUTA_SQL_ORIGINAL, 'r', encoding='utf-8') as archivo_sql:
             script_sql = archivo_sql.read()
-            # executescript ejecuta múltiples sentencias separadas por ;
             cursor.executescript(script_sql)
     else:
         print(f"Advertencia: No se encontró el archivo {RUTA_SQL_ORIGINAL}.")
 
     # 2. Insertar usuario de prueba (si no existe previamente)
-    cursor.execute("SELECT * FROM usuarios WHERE correo = ?", ("admin@proelectro.mx",))
-    if not cursor.fetchone():
+    cursor.execute("SELECT id FROM usuarios WHERE correo = ?", ("admin@proelectro.mx",))
+    usuario_existente = cursor.fetchone()
+    
+    if not usuario_existente:
         # Encriptar la contraseña "admin123"
         password_plana = "admin123".encode('utf-8')
         password_hash = bcrypt.hashpw(password_plana, bcrypt.gensalt()).decode('utf-8')
         
         cursor.execute(
-            "INSERT INTO usuarios (nombre_completo,correo, password, rol) VALUES (?,?, ?, ?)",
-            ("Edwin Guerrero","admin@proelectro.mx", password_hash, "Super admin")
+            "INSERT INTO usuarios (nombre_completo, correo, password, rol) VALUES (?, ?, ?, ?)",
+            ("Edwin Guerrero", "admin@proelectro.mx", password_hash, "Super admin")
         )
-        print("✅ Usuario de prueba creado: admin@proelectro.mx / Contraseña: admin123")
+        
+        # Obtenemos el ID que SQLite le acaba de asignar
+        id_nuevo_usuario = cursor.lastrowid
+        
+        # --- NUEVO: CREAR DICCIONARIO Y MANDARLO A LA NUBE ---
+        datos_usuario = {
+            "id": id_nuevo_usuario,
+            "nombre_completo": "Edwin Guerrero",
+            "correo": "admin@proelectro.mx",
+            "password": password_hash,
+            "rol": "Super admin"
+        }
+        
+        # Registramos en la cola para que el hilo en segundo plano lo suba a Cloudflare
+        registrar_en_cola_sync('usuarios', 'INSERT', id_nuevo_usuario, datos_usuario)
+        
+        print("✅ Usuario de prueba creado y encolado para la nube: admin@proelectro.mx")
 
     conexion.commit()
     conexion.close()
