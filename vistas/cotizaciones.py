@@ -533,6 +533,7 @@ class DialogoCotizacion(QDialog):
                 """, (fecha, cliente_id, vendedor, oc, obra, estado, self.monto_total_guardar, self.cotizacion_id))
                 
                 datos_cotizacion = {
+                    "id_cotizacion": self.cotizacion_id,
                     "fecha": fecha,
                     "cliente_id": cliente_id,
                     "vendedor": vendedor,
@@ -566,6 +567,7 @@ class DialogoCotizacion(QDialog):
                 
                 id_cotizacion_actual = cursor.lastrowid
                 datos_cotizacion = {
+                    "id_cotizacion": id_cotizacion_actual,
                     "folio": folio,
                     "fecha": fecha,
                     "cliente_id": cliente_id,
@@ -595,6 +597,7 @@ class DialogoCotizacion(QDialog):
                 
                 id_detalle = cursor.lastrowid
                 datos_detalle = {
+                    "id": id_detalle,
                     "cotizacion_id": id_cotizacion_actual,
                     "codigo_producto": codigo,
                     "descripcion": desc,

@@ -102,6 +102,7 @@ class DialogoUsuario(QDialog):
                     """, (nombre, correo, hash_pw, rol, self.usuario_id))
                     
                     datos_dict = {
+                        "id": self.usuario_id, # <--- AGREGAR ESTO
                         "nombre_completo": nombre,
                         "correo": correo,
                         "password": hash_pw,
@@ -115,6 +116,7 @@ class DialogoUsuario(QDialog):
                     """, (nombre, correo, rol, self.usuario_id))
                     
                     datos_dict = {
+                        "id": self.usuario_id, # <--- AGREGAR ESTO
                         "nombre_completo": nombre,
                         "correo": correo,
                         "rol": rol
@@ -132,6 +134,7 @@ class DialogoUsuario(QDialog):
                 
                 nuevo_id = cursor.lastrowid
                 datos_dict = {
+                    "id": nuevo_id, # <--- AGREGAR ESTO
                     "nombre_completo": nombre,
                     "correo": correo,
                     "password": hash_pw,

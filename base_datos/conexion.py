@@ -6,6 +6,7 @@ import bcrypt
 import json
 from datetime import datetime
 import threading
+import requests
 
 # ==========================================
 # 1. RUTAS INTELIGENTES PARA EVITAR PÉRDIDA DE DATOS
@@ -100,10 +101,8 @@ def inicializar_bd():
             ("Edwin Guerrero", "admin@proelectro.mx", password_hash, "Super admin")
         )
         
-        # Obtenemos el ID que SQLite le acaba de asignar
         id_nuevo_usuario = cursor.lastrowid
         
-        # --- NUEVO: CREAR DICCIONARIO Y MANDARLO A LA NUBE ---
         datos_usuario = {
             "id": id_nuevo_usuario,
             "nombre_completo": "Edwin Guerrero",
@@ -112,10 +111,76 @@ def inicializar_bd():
             "rol": "Super admin"
         }
         
-        # Registramos en la cola para que el hilo en segundo plano lo suba a Cloudflare
+        # --- SOLUCIÓN AL DATABASE LOCKED ---
+        # Guardamos y liberamos la tabla usuarios PRIMERO
+        conexion.commit()
+        
+        # AHORA SÍ registramos en la cola (que abre su propia conexión internamente)
         registrar_en_cola_sync('usuarios', 'INSERT', id_nuevo_usuario, datos_usuario)
         
         print("✅ Usuario de prueba creado y encolado para la nube: admin@proelectro.mx")
+    else:
+        conexion.commit()
 
-    conexion.commit()
     conexion.close()
+    
+def realizar_descarga_inicial():
+    """Descarga toda la BD de la nube si la instalación local es nueva (inventario vacío)."""
+    conexion = obtener_conexion()
+    cursor = conexion.cursor()
+    
+    try:
+        # Verificamos si la base de datos ya tiene información (usamos inventario como referencia)
+        cursor.execute("SELECT COUNT(*) FROM inventario")
+        if cursor.fetchone()[0] > 0:
+            # Ya hay datos, no necesitamos descargar nada
+            return
+
+        print("Iniciando descarga inicial desde la nube...")
+        URL_API_PULL = "https://api-pro-electro.pro-electro.workers.dev/api/descargar_todo"
+        
+        respuesta = requests.get(URL_API_PULL, timeout=15) # Damos más tiempo porque son muchos datos
+        
+        if respuesta.status_code == 200:
+            datos_nube = respuesta.json()
+            
+            if datos_nube.get("success"):
+                data = datos_nube["data"]
+                
+                # Desactivar temporalmente las llaves foráneas para inserción masiva más rápida
+                cursor.execute("PRAGMA foreign_keys = OFF;")
+                
+                # Función auxiliar para insertar dinámicamente
+                def insertar_lote(tabla, registros):
+                    if not registros: return
+                    columnas = ", ".join(registros[0].keys())
+                    placeholders = ", ".join(["?"] * len(registros[0]))
+                    query = f"INSERT OR REPLACE INTO {tabla} ({columnas}) VALUES ({placeholders})"
+                    
+                    # Convertimos la lista de diccionarios en lista de tuplas
+                    valores = [tuple(r.values()) for r in registros]
+                    cursor.executemany(query, valores)
+                
+                # Insertamos las tablas (El orden importa lógicamente, aunque PRAGMA esté OFF)
+                insertar_lote("usuarios", data.get("usuarios", []))
+                insertar_lote("clientes", data.get("clientes", []))
+                insertar_lote("proveedores", data.get("proveedores", []))
+                insertar_lote("inventario", data.get("inventario", []))
+                insertar_lote("cotizaciones", data.get("cotizaciones", []))
+                insertar_lote("cotizaciones_detalle", data.get("cotizaciones_detalle", []))
+                insertar_lote("catalogo_um", data.get("catalogo_um", []))
+                insertar_lote("datos_fiscales", data.get("datos_fiscales", []))
+                
+                # Reactivamos las llaves foráneas
+                cursor.execute("PRAGMA foreign_keys = ON;")
+                conexion.commit()
+                print("✅ Descarga inicial completada exitosamente. Base de datos sincronizada.")
+            else:
+                print(f"Error en los datos de la nube: {datos_nube.get('error')}")
+                
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ No hay internet para la descarga inicial. El sistema iniciará vacío. Detalle: {e}")
+    except Exception as e:
+        print(f"❌ Error durante la descarga inicial: {str(e)}")
+    finally:
+        conexion.close()

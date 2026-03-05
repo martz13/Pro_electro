@@ -1,7 +1,7 @@
 import sys
 import os
 from PySide6.QtWidgets import QApplication
-from base_datos.conexion import inicializar_bd
+from base_datos.conexion import inicializar_bd, realizar_descarga_inicial
 from vistas.login import LoginWindow
 from utilidades.auto_inicio import configurar_inicio_automatico
 
@@ -16,6 +16,7 @@ def resource_path(relative_path):
 
 if __name__ == "__main__":
     inicializar_bd()
+    realizar_descarga_inicial()
     configurar_inicio_automatico()
     app = QApplication(sys.argv)
     

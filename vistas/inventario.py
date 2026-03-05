@@ -382,14 +382,14 @@ class DialogoGestionUM(QDialog):
         dialogo = DialogoNuevaUM(self)
         if dialogo.exec():
             self.cargar_tabla()
-            self.actualizar_combo_padre()
+            
 
     def editar_um(self, uid, sigla_actual, descripcion_actual):
         """Abre diálogo para editar una unidad de medida"""
         dialogo = DialogoEditarUM(self, uid, sigla_actual, descripcion_actual)
         if dialogo.exec():
             self.cargar_tabla()
-            self.actualizar_combo_padre()
+            
 
     def eliminar_um(self, uid, sigla):
         """Elimina una unidad de medida y actualiza productos afectados de forma individual para la sincronización"""
@@ -451,7 +451,7 @@ class DialogoGestionUM(QDialog):
                 
                 # Recargar la tabla y combos
                 self.cargar_tabla()
-                self.actualizar_combo_padre()
+                
                 
                 QMessageBox.information(self, "Éxito", 
                     f"Unidad '{sigla}' eliminada.\n"
