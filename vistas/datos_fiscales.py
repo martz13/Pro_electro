@@ -2,7 +2,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QLineEdit, QTextEdit, QPushButton, QGroupBox, 
                                QGridLayout, QMessageBox)
 from PySide6.QtCore import Qt
-from base_datos.conexion import obtener_conexion, registrar_en_cola_sync
+import requests
+from base_datos.conexion import obtener_conexion, forzar_descarga_nube,operacion_crud_nube
 
 class VistaDatosFiscales(QWidget):
     def __init__(self):
@@ -119,8 +120,7 @@ class VistaDatosFiscales(QWidget):
                 }
                 
                 conexion.commit()
-                registrar_en_cola_sync('datos_fiscales', 'INSERT', 1, datos_dict)
-                
+            
                 self.cargar_datos() # Volvemos a llamar para llenar la interfaz
             except Exception as e:
                 print(f"Error al inicializar datos fiscales: {e}")
@@ -128,6 +128,89 @@ class VistaDatosFiscales(QWidget):
         conexion.close()
 
     def guardar_datos(self):
+        # --- REGLA 1 y 2: Bloqueo de UI y Prevención de Colisiones ---
+        try:
+            resp = requests.get("https://api-pro-electro.pro-electro.workers.dev/api/estado_tabla?tabla=datos_fiscales", timeout=3)
+            if resp.status_code == 200:
+                total_nube = resp.json().get("total", 0)
+                
+                conexion = obtener_conexion()
+                cursor = conexion.cursor()
+                cursor.execute("SELECT COUNT(*) FROM datos_fiscales")
+                total_local = cursor.fetchone()[0]
+                conexion.close()
+                
+                if total_nube > total_local:
+                    QMessageBox.information(self, "Sincronizando...", "Se detectaron nuevos datos en la nube. Actualizando sistema...")
+                    forzar_descarga_nube()
+                    # Dejamos que continúe
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
+            return
+        # -------------------------------------------------------------
+
+        nombre = self.input_nombre.text().strip()
+        telefono = self.input_telefono.text().strip()
+        ubicacion = self.input_ubicacion.text().strip()
+        rfc = self.input_rfc.text().strip()
+        representante = self.input_representante.text().strip()
+        terminos = self.input_terminos.toPlainText().strip()
+
+        # Armamos el diccionario
+        datos_dict = {
+            "nombre_empresa": nombre,
+            "telefono": telefono,
+            "ubicacion": ubicacion,
+            "rfc": rfc,
+            "representante_legal": representante,
+            "terminos_condiciones": terminos
+        }
+
+        # --- REGLA 3: NUBE PRIMERO ---
+        # El ID en esta tabla siempre es 1
+        exito, msj = operacion_crud_nube('datos_fiscales', 'UPDATE', datos_dict, 1)
+        if not exito:
+            QMessageBox.critical(self, "Error en la Nube", f"No se pudieron guardar los datos en el servidor:\n{msj}")
+            return # Detenemos la ejecución, no tocamos el local
+
+        # --- LOCAL DESPUÉS DEL ÉXITO EN LA NUBE ---
+        conexion = obtener_conexion()
+        cursor = conexion.cursor()
+
+        try:
+            cursor.execute("""
+                UPDATE datos_fiscales 
+                SET nombre_empresa=?, telefono=?, ubicacion=?, rfc=?, representante_legal=?, terminos_condiciones=?
+                WHERE id=1
+            """, (nombre, telefono, ubicacion, rfc, representante, terminos))
+            
+            conexion.commit()
+            QMessageBox.information(self, "Éxito", "Los datos fiscales se han guardado correctamente.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error Local", f"No se pudieron guardar los datos localmente:\n{str(e)}")
+        finally:
+            conexion.close()
+        # --- REGLA 1 y 2: Bloqueo de UI y Prevención de Colisiones ---
+        try:
+            resp = requests.get("https://api-pro-electro.pro-electro.workers.dev/api/estado_tabla?tabla=datos_fiscales", timeout=3)
+            if resp.status_code == 200:
+                total_nube = resp.json().get("total", 0)
+                
+                conexion = obtener_conexion()
+                cursor = conexion.cursor()
+                cursor.execute("SELECT COUNT(*) FROM datos_fiscales")
+                total_local = cursor.fetchone()[0]
+                conexion.close()
+                
+                if total_nube > total_local:
+                    QMessageBox.information(self, "Sincronizando...", "Se detectaron nuevos datos en la nube. Actualizando sistema...")
+                    forzar_descarga_nube()
+                    # Dejamos que continúe
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
+            return
+        # -------------------------------------------------------------
+
         nombre = self.input_nombre.text().strip()
         telefono = self.input_telefono.text().strip()
         ubicacion = self.input_ubicacion.text().strip()
@@ -156,7 +239,6 @@ class VistaDatosFiscales(QWidget):
             }
             
             conexion.commit()
-            registrar_en_cola_sync('datos_fiscales', 'UPDATE', 1, datos_dict)
             
             QMessageBox.information(self, "Éxito", "Los datos fiscales se han guardado correctamente.")
         except Exception as e:

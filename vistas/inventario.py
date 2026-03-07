@@ -1,10 +1,11 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
-    QDialog, QMessageBox, QGridLayout, QComboBox, QListWidget, QListWidgetItem
+    QDialog, QMessageBox, QGridLayout, QComboBox, QListWidget, QListWidgetItem 
 )
 from PySide6.QtCore import Qt
-from base_datos.conexion import obtener_conexion, registrar_en_cola_sync
+import requests
+from base_datos.conexion import obtener_conexion,forzar_descarga_nube,operacion_crud_nube
 
 
 # ────────────────────────────────────────────────
@@ -51,19 +52,40 @@ class DialogoNuevaUM(QDialog):
             return
 
         conn = obtener_conexion()
+        
+        # --- REGLA 2: Prevención de Colisiones (catalogo_um) ---
         try:
-            cursor = conn.cursor()
-            cursor.execute("INSERT INTO catalogo_um (sigla, descripcion) VALUES (?, ?)", (sigla, desc))
-            nuevo_id = cursor.lastrowid
-            
+            resp = requests.get("https://api-pro-electro.pro-electro.workers.dev/api/estado_tabla?tabla=catalogo_um", timeout=3)
+            if resp.status_code == 200:
+                total_nube = resp.json().get("total", 0)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM catalogo_um")
+                total_local = cursor.fetchone()[0]
+                
+                if total_nube > total_local:
+                    QMessageBox.information(self, "Sincronizando...", "Se detectaron nuevos datos en la nube. Actualizando sistema...")
+                    forzar_descarga_nube()
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Error de Red", "Se perdió la conexión. No se puede guardar.")
+            conn.close()
+            return
+        # -------------------------------------------------------
+
+        try:
             datos_dict = {
                 "sigla": sigla,
                 "descripcion": desc
             }
+
+            # --- REGLA 3: NUBE PRIMERO (Genera el ID) ---
+            exito, nuevo_id_nube = operacion_crud_nube('catalogo_um', 'INSERT', datos_dict)
+            if not exito: raise Exception(f"Error en la nube: {nuevo_id_nube}")
+
+            # --- LOCAL USANDO EL ID MAESTRO DE LA NUBE ---
+            cursor = conn.cursor()
+            cursor.execute("INSERT INTO catalogo_um (id, sigla, descripcion) VALUES (?, ?, ?)", (nuevo_id_nube, sigla, desc))
             
             conn.commit()
-            registrar_en_cola_sync('catalogo_um', 'INSERT', nuevo_id, datos_dict)
-            
             self.accept()
         except Exception as e:
             if "UNIQUE" in str(e).upper():
@@ -72,8 +94,6 @@ class DialogoNuevaUM(QDialog):
                 QMessageBox.critical(self, "Error", str(e))
         finally:
             conn.close()
-
-
 # ────────────────────────────────────────────────
 # Diálogo para agregar / editar producto
 # ────────────────────────────────────────────────
@@ -97,7 +117,7 @@ class DialogoProducto(QDialog):
         campos = [
             ("Código:",          "input_codigo",   0, 0, producto_datos[1] if producto_datos else ""),
             ("Descripción:",     "input_desc",     0, 2, producto_datos[2] if producto_datos else ""),
-            ("Stock:",           "input_stock",    1, 0, str(producto_datos[3]) if producto_datos else "0"),
+            ("Stock:",           "input_stock",    1, 0, str(int(producto_datos[3])) if producto_datos else "0"),
             ("Marca:",           "input_marca",     2, 0, producto_datos[6] if producto_datos else ""),
             ("Precio Compra ($):","input_compra",   3, 0, str(producto_datos[7]) if producto_datos else "0.00"),
             ("Precio Venta ($):", "input_venta",    3, 2, str(producto_datos[8]) if producto_datos else "0.00"),
@@ -210,69 +230,58 @@ class DialogoProducto(QDialog):
     def guardar(self):
         codigo = self.input_codigo.text().strip()
         desc   = self.input_desc.text().strip()
-
         if not codigo or not desc:
-            QMessageBox.warning(self, "Campos requeridos", "Código y Descripción son obligatorios.")
+            QMessageBox.warning(self, "Requeridos", "Código y Descripción son obligatorios.")
             return
 
-        try:
-            stock  = float(self.input_stock.text().strip() or 0)
-            compra = float(self.input_compra.text().strip() or 0)
-            venta  = float(self.input_venta.text().strip() or 0)
-        except ValueError:
-            QMessageBox.warning(self, "Formato incorrecto", "Stock y precios deben ser números.")
-            return
-
+        stock = int(float(self.input_stock.text().strip() or 0)) 
+        compra = float(self.input_compra.text().strip() or 0)
+        venta  = float(self.input_venta.text().strip() or 0)
         um = self.combo_um.currentText()
         prov_id = self.combo_prov.currentData()
         marca = self.input_marca.text().strip()
 
-        datos = (codigo, desc, stock, um, prov_id, marca, compra, venta)
-        
-        datos_dict = {
-            "codigo_producto": codigo,
-            "descripcion": desc,
-            "stock": stock,
-            "um": um,
-            "proveedor_id": prov_id,
-            "marca": marca,
-            "precio_compra": compra,
-            "precio_venta": venta
-        }
+        datos_dict = {"codigo_producto": codigo, "descripcion": desc, "stock": stock, "um": um, "proveedor_id": prov_id, "marca": marca, "precio_compra": compra, "precio_venta": venta}
 
         conn = obtener_conexion()
         cursor = conn.cursor()
+        
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except:
+            QMessageBox.warning(self, "Error de Red", "Se perdió la conexión.")
+            conn.close()
+            return
+
         try:
             if self.producto_id:
-                cursor.execute("""
-                    UPDATE inventario SET
-                        codigo_producto=?, descripcion=?, stock=?, um=?,
-                        proveedor_id=?, marca=?, precio_compra=?, precio_venta=?
-                    WHERE id=?
-                """, (*datos, self.producto_id))
+                exito, msj = operacion_crud_nube('inventario', 'UPDATE', datos_dict, self.producto_id)
+                if not exito: raise Exception(msj)
+
+                # Apagamos reglas para evitar el error de SQLite
+                cursor.execute("PRAGMA foreign_keys = OFF;")
                 
-                conn.commit()
-                registrar_en_cola_sync('inventario', 'UPDATE', self.producto_id, datos_dict)
+                cursor.execute("SELECT codigo_producto FROM inventario WHERE id=?", (self.producto_id,))
+                codigo_viejo = cursor.fetchone()[0]
+                if codigo_viejo != codigo:
+                    cursor.execute("UPDATE cotizaciones_detalle SET codigo_producto=? WHERE codigo_producto=?", (codigo, codigo_viejo))
+
+                cursor.execute("UPDATE inventario SET codigo_producto=?, descripcion=?, stock=?, um=?, proveedor_id=?, marca=?, precio_compra=?, precio_venta=? WHERE id=?", 
+                               (codigo, desc, stock, um, prov_id, marca, compra, venta, self.producto_id))
                 
+                cursor.execute("PRAGMA foreign_keys = ON;")
             else:
-                cursor.execute("""
-                    INSERT INTO inventario
-                    (codigo_producto, descripcion, stock, um, proveedor_id, marca, precio_compra, precio_venta)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, datos)
+                exito, nuevo_id = operacion_crud_nube('inventario', 'INSERT', datos_dict)
+                if not exito: raise Exception(nuevo_id)
+                cursor.execute("INSERT INTO inventario (id, codigo_producto, descripcion, stock, um, proveedor_id, marca, precio_compra, precio_venta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", 
+                               (nuevo_id, codigo, desc, stock, um, prov_id, marca, compra, venta))
                 
-                nuevo_id = cursor.lastrowid
-                conn.commit()
-                registrar_en_cola_sync('inventario', 'INSERT', nuevo_id, datos_dict)
-                
+            conn.commit()
             self.accept()
         except Exception as e:
-            QMessageBox.critical(self, "Error al guardar", str(e))
+            QMessageBox.critical(self, "Error", str(e))
         finally:
             conn.close()
-
-
-# ────────────────────────────────────────────────
 # Diálogo para gestionar (ver + eliminar) UM
 # ────────────────────────────────────────────────
 # ────────────────────────────────────────────────
@@ -379,6 +388,13 @@ class DialogoGestionUM(QDialog):
 
     def agregar_nueva_um(self):
         """Abre el diálogo para crear nueva unidad de medida"""
+        # --- REGLA 1: Bloqueo de UI sin internet ---
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar.")
+            return
+        # ------------------------------------------
         dialogo = DialogoNuevaUM(self)
         if dialogo.exec():
             self.cargar_tabla()
@@ -386,6 +402,13 @@ class DialogoGestionUM(QDialog):
 
     def editar_um(self, uid, sigla_actual, descripcion_actual):
         """Abre diálogo para editar una unidad de medida"""
+        # --- REGLA 1: Bloqueo de UI sin internet ---
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar.")
+            return
+        # ------------------------------------------
         dialogo = DialogoEditarUM(self, uid, sigla_actual, descripcion_actual)
         if dialogo.exec():
             self.cargar_tabla()
@@ -393,6 +416,11 @@ class DialogoGestionUM(QDialog):
 
     def eliminar_um(self, uid, sigla):
         """Elimina una unidad de medida y actualiza productos afectados de forma individual para la sincronización"""
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar.")
+            return
         conn = obtener_conexion()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM inventario WHERE um = ?", (sigla,))
@@ -444,10 +472,8 @@ class DialogoGestionUM(QDialog):
                         "precio_compra": p_compra,
                         "precio_venta": p_venta
                     }
-                    registrar_en_cola_sync('inventario', 'UPDATE', p_id, prod_dict)
                 
                 # 4. Registrar la eliminación de la unidad de medida principal
-                registrar_en_cola_sync('catalogo_um', 'DELETE', uid, None)
                 
                 # Recargar la tabla y combos
                 self.cargar_tabla()
@@ -519,7 +545,6 @@ class DialogoEditarUM(QDialog):
         layout.addLayout(btn_layout)
 
     def guardar(self):
-        """Guarda los cambios de la unidad de medida y actualiza productos individualmente para sincronización"""
         nueva_sigla = self.input_sigla.text().strip().upper()
         nueva_desc = self.input_desc.text().strip()
 
@@ -528,6 +553,25 @@ class DialogoEditarUM(QDialog):
             return
 
         conn = obtener_conexion()
+
+        # --- REGLA 2: Prevención de Colisiones ---
+        try:
+            resp = requests.get("https://api-pro-electro.pro-electro.workers.dev/api/estado_tabla?tabla=catalogo_um", timeout=3)
+            if resp.status_code == 200:
+                total_nube = resp.json().get("total", 0)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM catalogo_um")
+                total_local = cursor.fetchone()[0]
+                
+                if total_nube > total_local:
+                    QMessageBox.information(self, "Sincronizando...", "Se detectaron nuevos datos en la nube. Actualizando sistema...")
+                    forzar_descarga_nube()
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Error de Red", "Se perdió la conexión. No se puede guardar.")
+            conn.close()
+            return
+        # -----------------------------------------
+
         try:
             cursor = conn.cursor()
             
@@ -537,50 +581,39 @@ class DialogoEditarUM(QDialog):
                 QMessageBox.warning(self, "Duplicado", f"La sigla '{nueva_sigla}' ya existe.")
                 return
 
-            # 1. Recuperar los productos que van a ser modificados por el cambio de sigla
             cursor.execute("""
                 SELECT id, codigo_producto, descripcion, stock, proveedor_id, marca, precio_compra, precio_venta 
                 FROM inventario WHERE um = ?
             """, (self.sigla_actual,))
             productos_afectados = cursor.fetchall()
 
-            # 2. Actualizar localmente la unidad de medida y los productos
-            cursor.execute("""
-                UPDATE catalogo_um 
-                SET sigla = ?, descripcion = ? 
-                WHERE id = ?
-            """, (nueva_sigla, nueva_desc, self.uid))
-            
-            cursor.execute("""
-                UPDATE inventario 
-                SET um = ? 
-                WHERE um = ?
-            """, (nueva_sigla, self.sigla_actual))
-            
-            conn.commit()
-            
-            # 3. Registrar actualizaciones individuales de los productos afectados en la cola
+            # --- REGLA 3: NUBE PRIMERO (Cascada) ---
+            # 1. Actualizar la tabla catalogo_um en la nube
+            um_dict = {"sigla": nueva_sigla, "descripcion": nueva_desc}
+            exito_um, msj_um = operacion_crud_nube('catalogo_um', 'UPDATE', um_dict, self.uid)
+            if not exito_um: raise Exception(f"Error actualizando UM en la nube: {msj_um}")
+
+            # 2. Actualizar productos afectados en la nube
             for prod in productos_afectados:
                 p_id, p_codigo, p_desc, p_stock, p_prov_id, p_marca, p_compra, p_venta = prod
                 prod_dict = {
-                    "codigo_producto": p_codigo,
-                    "descripcion": p_desc,
-                    "stock": p_stock,
-                    "um": nueva_sigla, # La nueva sigla
-                    "proveedor_id": p_prov_id,
-                    "marca": p_marca,
-                    "precio_compra": p_compra,
-                    "precio_venta": p_venta
+                    "codigo_producto": p_codigo, "descripcion": p_desc, "stock": p_stock,
+                    "um": nueva_sigla, "proveedor_id": p_prov_id, "marca": p_marca,
+                    "precio_compra": p_compra, "precio_venta": p_venta
                 }
-                registrar_en_cola_sync('inventario', 'UPDATE', p_id, prod_dict)
-                
-            # 4. Registrar la actualización de la tabla catalogo_um en la cola
-            um_dict = {
-                "sigla": nueva_sigla,
-                "descripcion": nueva_desc
-            }
-            registrar_en_cola_sync('catalogo_um', 'UPDATE', self.uid, um_dict)
+                exito_p, msj_p = operacion_crud_nube('inventario', 'UPDATE', prod_dict, p_id)
+                if not exito_p: raise Exception(f"Error actualizando prod. {p_codigo} en la nube: {msj_p}")
+
+            # --- LOCAL DESPUÉS DEL ÉXITO EN LA NUBE ---
+            cursor.execute("""
+                UPDATE catalogo_um SET sigla = ?, descripcion = ? WHERE id = ?
+            """, (nueva_sigla, nueva_desc, self.uid))
             
+            cursor.execute("""
+                UPDATE inventario SET um = ? WHERE um = ?
+            """, (nueva_sigla, self.sigla_actual))
+            
+            conn.commit()
             self.accept()
             
         except Exception as e:
@@ -588,8 +621,6 @@ class DialogoEditarUM(QDialog):
             QMessageBox.critical(self, "Error", str(e))
         finally:
             conn.close()
-
-
 
 # ────────────────────────────────────────────────
 # Vista principal de Inventario
@@ -726,7 +757,7 @@ class VistaInventario(QWidget):
             item_id.setTextAlignment(Qt.AlignCenter)
             item_id.setData(Qt.UserRole, row)
 
-            stock_txt = f"{row[3]:.2f}" if row[3] % 1 else str(int(row[3]))
+            stock_txt = str(int(row[3])) 
             compra_txt = f"${row[7]:.2f}"
             venta_txt  = f"${row[8]:.2f}"
 
@@ -757,34 +788,71 @@ class VistaInventario(QWidget):
             self.editar_producto(item.data(Qt.UserRole))
 
     def agregar_producto(self):
+        # --- REGLA 1: Bloqueo de UI sin internet ---
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
+            return
+        # ------------------------------------------
+
         if DialogoProducto(self).exec():
             self.cargar_datos()
 
     def editar_producto(self, datos):
+        # --- REGLA 1: Bloqueo de UI sin internet ---
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
+            return
+        # ------------------------------------------
+
         if DialogoProducto(self, datos).exec():
             self.cargar_datos()
-
     def eliminar_producto(self, pid, descripcion):
-        resp = QMessageBox.question(
-            self, "Confirmar",
-            f"¿Eliminar el producto?\n\n{descripcion}",
-            QMessageBox.Yes | QMessageBox.No
-        )
-        if resp == QMessageBox.Yes:
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar.")
+            return
+
+        if QMessageBox.question(self, "Confirmar", f"¿Eliminar el producto?\n\n{descripcion}", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            exito, mensaje = operacion_crud_nube('inventario', 'DELETE', registro_id=pid)
+            if not exito:
+                QMessageBox.critical(self, "Error Nube", f"No se pudo eliminar:\n{mensaje}")
+                return 
+            
+            # --- CASCADA Y RECÁLCULO LOCAL ---
             conn = obtener_conexion()
             try:
-                conn.execute("DELETE FROM inventario WHERE id = ?", (pid,))
+                cursor = conn.cursor()
+                cursor.execute("PRAGMA foreign_keys = OFF;")
+                
+                cursor.execute("SELECT codigo_producto FROM inventario WHERE id=?", (pid,))
+                cod = cursor.fetchone()[0]
+                
+                # Obtener qué cotizaciones se verán afectadas
+                cursor.execute("SELECT DISTINCT cotizacion_id FROM cotizaciones_detalle WHERE codigo_producto=?", (cod,))
+                cots_afectadas = [row[0] for row in cursor.fetchall()]
+                
+                cursor.execute("DELETE FROM cotizaciones_detalle WHERE codigo_producto=?", (cod,))
+                
+                # Recalcular el total de cada cotización afectada
+                for cid in cots_afectadas:
+                    cursor.execute("SELECT SUM(monto) FROM cotizaciones_detalle WHERE cotizacion_id=?", (cid,))
+                    subtotal = cursor.fetchone()[0] or 0.0
+                    total = subtotal * 1.16 # Sumamos el IVA
+                    cursor.execute("UPDATE cotizaciones SET monto_total=? WHERE id_cotizacion=?", (total, cid))
+                
+                cursor.execute("DELETE FROM inventario WHERE id=?", (pid,))
+                
+                cursor.execute("PRAGMA foreign_keys = ON;")
                 conn.commit()
-                
-                # Registramos en la cola
-                registrar_en_cola_sync('inventario', 'DELETE', pid, None)
-                
                 self.cargar_datos()
             except Exception as e:
-                QMessageBox.critical(self, "Error", str(e))
+                QMessageBox.critical(self, "Error Local", str(e))
             finally:
                 conn.close()
-
-
 # Opcional: botón para abrir gestión de UM desde algún lugar (puedes agregarlo donde prefieras)
 # Por ejemplo en la cabecera o en el diálogo de producto

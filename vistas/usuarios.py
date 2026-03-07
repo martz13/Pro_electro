@@ -5,7 +5,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QComboBox)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QColor
-from base_datos.conexion import obtener_conexion, registrar_en_cola_sync
+import requests
+from base_datos.conexion import obtener_conexion, forzar_descarga_nube, operacion_crud_nube
 
 class DialogoUsuario(QDialog):
     def __init__(self, parent=None, usuario_id=None, nombre="", correo="", rol="Vendedor"):
@@ -79,17 +80,33 @@ class DialogoUsuario(QDialog):
         if not nombre:
             QMessageBox.warning(self, "Error", "El nombre completo es obligatorio.")
             return
-
         if not correo:
             QMessageBox.warning(self, "Error", "El correo electrónico es obligatorio.")
             return
-        
         if not self.usuario_id and not password:
             QMessageBox.warning(self, "Error", "La contraseña es obligatoria para nuevos usuarios.")
             return
 
         conexion = obtener_conexion()
         cursor = conexion.cursor()
+
+        # --- REGLA 2: Prevención de Colisiones (Verificar antes de Guardar) ---
+        try:
+            resp = requests.get("https://api-pro-electro.pro-electro.workers.dev/api/estado_tabla?tabla=usuarios", timeout=3)
+            if resp.status_code == 200:
+                total_nube = resp.json().get("total", 0)
+                
+                cursor.execute("SELECT COUNT(*) FROM usuarios")
+                total_local = cursor.fetchone()[0]
+                
+                if total_nube > total_local:
+                    QMessageBox.information(self, "Sincronizando...", "Se detectaron nuevos datos en la nube de otros usuarios. Actualizando sistema...")
+                    forzar_descarga_nube()
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Error de Red", "Se perdió la conexión. No se puede guardar.")
+            conexion.close()
+            return
+        # ----------------------------------------------------------------------
 
         try:
             if self.usuario_id: # EDITAR
@@ -102,7 +119,7 @@ class DialogoUsuario(QDialog):
                     """, (nombre, correo, hash_pw, rol, self.usuario_id))
                     
                     datos_dict = {
-                        "id": self.usuario_id, # <--- AGREGAR ESTO
+                        "id": self.usuario_id,
                         "nombre_completo": nombre,
                         "correo": correo,
                         "password": hash_pw,
@@ -116,14 +133,18 @@ class DialogoUsuario(QDialog):
                     """, (nombre, correo, rol, self.usuario_id))
                     
                     datos_dict = {
-                        "id": self.usuario_id, # <--- AGREGAR ESTO
+                        "id": self.usuario_id,
                         "nombre_completo": nombre,
                         "correo": correo,
                         "rol": rol
                     }
                 
                 conexion.commit()
-                registrar_en_cola_sync('usuarios', 'UPDATE', self.usuario_id, datos_dict)
+                
+                # --- REGLA 3 (UPDATE): Nube Primero ---
+                exito, msj = operacion_crud_nube('usuarios', 'UPDATE', datos_dict, self.usuario_id)
+                if not exito: 
+                    raise Exception(f"Error en la nube: {msj}")
                 
             else: # NUEVO
                 hash_pw = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
@@ -134,7 +155,7 @@ class DialogoUsuario(QDialog):
                 
                 nuevo_id = cursor.lastrowid
                 datos_dict = {
-                    "id": nuevo_id, # <--- AGREGAR ESTO
+                    "id": nuevo_id,
                     "nombre_completo": nombre,
                     "correo": correo,
                     "password": hash_pw,
@@ -142,15 +163,21 @@ class DialogoUsuario(QDialog):
                 }
                 
                 conexion.commit()
-                registrar_en_cola_sync('usuarios', 'INSERT', nuevo_id, datos_dict)
+                
+                # --- REGLA 3 (INSERT): Nube Primero ---
+                exito, nuevo_id_nube = operacion_crud_nube('usuarios', 'INSERT', datos_dict)
+                if not exito: 
+                    raise Exception(f"Error en la nube: {nuevo_id_nube}")
             
+            # SOLO UN MENSAJE DE ÉXITO AL FINAL
+            QMessageBox.information(self, "Éxito", "Usuario guardado correctamente.")
             self.accept()
+            
         except Exception as e:
             QMessageBox.critical(self, "Error", f"No se pudo guardar: {str(e)}")
         finally:
             conexion.close()
-
-
+            
 class VistaUsuarios(QWidget):
     def __init__(self):
         super().__init__()
@@ -343,23 +370,47 @@ class VistaUsuarios(QWidget):
             self.tabla.setCellWidget(fila, 4, widget_acciones)
 
     def agregar_usuario(self):
+        # --- REGLA 1: Bloqueo de UI sin internet ---
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
+            return
+        # ------------------------------------------
+
         dialogo = DialogoUsuario(self)
         if dialogo.exec():
             self.cargar_datos()
             QMessageBox.information(self, "Éxito", "Usuario agregado correctamente.")
 
     def editar_usuario(self, uid, nombre, correo, rol):
+        # --- REGLA 1: Bloqueo de UI sin internet ---
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
+            return
+        # ------------------------------------------
+
         dialogo = DialogoUsuario(self, uid, nombre, correo, rol)
         if dialogo.exec():
             self.cargar_datos()
             QMessageBox.information(self, "Éxito", "Usuario actualizado correctamente.")
 
     def eliminar_usuario(self, uid, nombre):
-        # Prevenir eliminar al último Super Admin (ajusta según tu lógica)
+        # Prevenir eliminar al último Super Admin
         if nombre == "Administrador Principal":
             QMessageBox.warning(self, "Acción no permitida", 
                               "No se puede eliminar al administrador principal.")
             return
+            
+        # --- REGLA 1: Bloqueo de UI sin internet ---
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
+            return
+        # ------------------------------------------
             
         respuesta = QMessageBox.question(
             self, 
@@ -370,17 +421,22 @@ class VistaUsuarios(QWidget):
         )
         
         if respuesta == QMessageBox.Yes:
+            # --- REGLA 3: ONLINE-FIRST (NUBE PRIMERO) ---
+            exito, mensaje = operacion_crud_nube('usuarios', 'DELETE', registro_id=uid)
+            
+            if not exito:
+                QMessageBox.critical(self, "Error en la Nube", f"No se pudo eliminar en el servidor:\n{mensaje}")
+                return # Detenemos todo, no borramos el local
+            
+            # --- LOCAL DESPUÉS DEL ÉXITO EN LA NUBE ---
             try:
                 conexion = obtener_conexion()
                 cursor = conexion.cursor()
                 cursor.execute("DELETE FROM usuarios WHERE id=?", (uid,))
                 conexion.commit()
-                
-                # Registro en la cola de sincronización
-                registrar_en_cola_sync('usuarios', 'DELETE', uid, None)
-                
                 conexion.close()
+                
                 self.cargar_datos()
                 QMessageBox.information(self, "Éxito", "Usuario eliminado correctamente.")
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"No se pudo eliminar: {str(e)}")
+                QMessageBox.critical(self, "Error Local", f"No se pudo eliminar: {str(e)}")

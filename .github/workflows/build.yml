@@ -25,20 +25,16 @@ jobs:
           pip install pyinstaller
 
       - name: Crear Ejecutable Principal (Pro Electro.exe)
+        # Se genera un único ejecutable en modo ventana (sin consola)
         run: |
           pyinstaller --onefile --windowed --name "Pro Electro" --icon=recursos/logo.ico --add-data "recursos;recursos" --add-data "base_datos/SQL.sql;base_datos" main.py
-
-      - name: Crear Ejecutable del Sincronizador (Sincronizador.exe)
-        run: |
-          pyinstaller --onefile --windowed --name "Sincronizador" --add-data "base_datos/SQL.sql;base_datos" utilidades/sincronizador.py
 
       - name: Preparar carpeta de entrega
         run: |
           mkdir Entrega_Final
           copy "dist\Pro Electro.exe" Entrega_Final\
-          copy "dist\Sincronizador.exe" Entrega_Final\
 
-      - name: Subir ejecutables a GitHub
+      - name: Subir ejecutable a GitHub
         uses: actions/upload-artifact@v4
         with:
           name: Pro_Electro_Sistema_Completo

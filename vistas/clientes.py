@@ -3,7 +3,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QAbstractItemView, QHeaderView, QDialog, QMessageBox, QGridLayout)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QColor
-from base_datos.conexion import obtener_conexion, registrar_en_cola_sync
+import requests
+from base_datos.conexion import obtener_conexion, forzar_descarga_nube, operacion_crud_nube
 
 class DialogoCliente(QDialog):
     def __init__(self, parent=None, cliente_datos=None):
@@ -74,62 +75,82 @@ class DialogoCliente(QDialog):
             QMessageBox.warning(self, "Error", "El Nombre Completo es obligatorio.")
             return
 
-        # Separado en tupla para la consulta SQL
-        datos_tupla = (
-            nombre, self.input_rfc.text().strip(), self.input_direccion.text().strip(),
-            self.input_colonia.text().strip(), self.input_poblacion.text().strip(),
-            self.input_cp.text().strip(), self.input_telefono.text().strip(),
-            self.input_correo.text().strip(), self.input_cfdi.text().strip(),
-            self.input_regimen.text().strip(), self.input_contacto.text().strip()
-        )
-        
-        # Diccionario base para la sincronización
+        # Construimos el diccionario de datos primero
         datos_dict = {
-            "nombre_completo": datos_tupla[0],
-            "rfc": datos_tupla[1],
-            "direccion": datos_tupla[2],
-            "colonia": datos_tupla[3],
-            "poblacion": datos_tupla[4],
-            "cp": datos_tupla[5],
-            "telefono": datos_tupla[6],
-            "correo": datos_tupla[7],
-            "cfdi": datos_tupla[8],
-            "regimen": datos_tupla[9],
-            "contacto": datos_tupla[10]
+            "nombre_completo": nombre,
+            "rfc": self.input_rfc.text().strip(),
+            "direccion": self.input_direccion.text().strip(),
+            "colonia": self.input_colonia.text().strip(),
+            "poblacion": self.input_poblacion.text().strip(),
+            "cp": self.input_cp.text().strip(),
+            "telefono": self.input_telefono.text().strip(),
+            "correo": self.input_correo.text().strip(),
+            "cfdi": self.input_cfdi.text().strip(),
+            "regimen": self.input_regimen.text().strip(),
+            "contacto": self.input_contacto.text().strip()
         }
 
         conexion = obtener_conexion()
         cursor = conexion.cursor()
+
+        # --- REGLA 2: Prevención de Colisiones (Verificar antes de Guardar) ---
         try:
-            if self.cliente_id:
+            resp = requests.get("https://api-pro-electro.pro-electro.workers.dev/api/estado_tabla?tabla=clientes", timeout=3)
+            if resp.status_code == 200:
+                total_nube = resp.json().get("total", 0)
+                
+                cursor.execute("SELECT COUNT(*) FROM clientes")
+                total_local = cursor.fetchone()[0]
+                
+                if total_nube > total_local:
+                    QMessageBox.information(self, "Sincronizando...", "Se detectaron nuevos datos en la nube de otros usuarios. Actualizando sistema...")
+                    forzar_descarga_nube()
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Error de Red", "Se perdió la conexión. No se puede guardar.")
+            conexion.close()
+            return
+        # ----------------------------------------------------------------------
+
+        try:
+            if self.cliente_id: # UPDATE
+                # --- REGLA 3: NUBE PRIMERO ---
+                exito, msj = operacion_crud_nube('clientes', 'UPDATE', datos_dict, self.cliente_id)
+                if not exito: raise Exception(f"Error en la nube: {msj}")
+                
+                # --- LOCAL DESPUÉS DEL ÉXITO EN LA NUBE ---
                 cursor.execute("""
                     UPDATE clientes SET 
                     nombre_completo=?, rfc=?, direccion=?, colonia=?, poblacion=?, 
                     cp=?, telefono=?, correo=?, cfdi=?, regimen=?, contacto=? 
                     WHERE id_cliente=?
-                """, (*datos_tupla, self.cliente_id))
+                """, (
+                    datos_dict["nombre_completo"], datos_dict["rfc"], datos_dict["direccion"],
+                    datos_dict["colonia"], datos_dict["poblacion"], datos_dict["cp"],
+                    datos_dict["telefono"], datos_dict["correo"], datos_dict["cfdi"],
+                    datos_dict["regimen"], datos_dict["contacto"], self.cliente_id
+                ))
                 
-                conexion.commit()
-                registrar_en_cola_sync('clientes', 'UPDATE', self.cliente_id, datos_dict)
+            else: # INSERT
+                # --- REGLA 3: NUBE PRIMERO (Genera el ID) ---
+                exito, nuevo_id_nube = operacion_crud_nube('clientes', 'INSERT', datos_dict)
+                if not exito: raise Exception(f"Error en la nube: {nuevo_id_nube}")
                 
-            else:
-                nuevo_id = self.generar_nuevo_id(cursor)
-                
-                # Para el INSERT es buena idea incluir su propia llave primaria en el dict
-                datos_dict["id_cliente"] = nuevo_id
-                
+                # --- LOCAL USANDO EL ID MAESTRO DE LA NUBE ---
                 cursor.execute("""
                     INSERT INTO clientes (id_cliente, nombre_completo, rfc, direccion, colonia, 
                     poblacion, cp, telefono, correo, cfdi, regimen, contacto) 
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (nuevo_id, *datos_tupla))
+                """, (
+                    nuevo_id_nube, datos_dict["nombre_completo"], datos_dict["rfc"], 
+                    datos_dict["direccion"], datos_dict["colonia"], datos_dict["poblacion"], 
+                    datos_dict["cp"], datos_dict["telefono"], datos_dict["correo"], 
+                    datos_dict["cfdi"], datos_dict["regimen"], datos_dict["contacto"]
+                ))
                 
-                conexion.commit()
-                registrar_en_cola_sync('clientes', 'INSERT', nuevo_id, datos_dict)
-            
+            conexion.commit()
             self.accept()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"No se pudo guardar: {str(e)}")
+            QMessageBox.critical(self, "Error", f"No se pudo guardar:\n{str(e)}")
         finally:
             conexion.close()
 
@@ -273,29 +294,59 @@ class VistaClientes(QWidget):
         self.editar_cliente(cliente_datos)
 
     def agregar_cliente(self):
+        # --- REGLA 1: Bloqueo de UI sin internet ---
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
+            return
+        # ------------------------------------------
+
         if DialogoCliente(self).exec():
             self.cargar_datos()
             QMessageBox.information(self, "Éxito", "Cliente registrado.")
 
     def editar_cliente(self, datos):
+        # --- REGLA 1: Bloqueo de UI sin internet ---
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
+            return
+        # ------------------------------------------
+
         if DialogoCliente(self, datos).exec():
             self.cargar_datos()
             QMessageBox.information(self, "Éxito", "Cliente actualizado.")
 
     def eliminar_cliente(self, c_id, nombre):
-        if QMessageBox.question(self, "Eliminar", f"¿Eliminar a {nombre}?", 
-                                QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar.")
+            return
+
+        if QMessageBox.question(self, "Eliminar", f"¿Eliminar a {nombre} y todas sus cotizaciones?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            exito, mensaje = operacion_crud_nube('clientes', 'DELETE', registro_id=c_id)
+            if not exito:
+                QMessageBox.critical(self, "Error en la Nube", f"No se pudo eliminar:\n{mensaje}")
+                return 
+            
+            # --- CASCADA LOCAL ---
             conexion = obtener_conexion()
             cursor = conexion.cursor()
             try:
+                cursor.execute("SELECT id_cotizacion FROM cotizaciones WHERE cliente_id=?", (c_id,))
+                cots = cursor.fetchall()
+                for cot in cots:
+                    cursor.execute("DELETE FROM cotizaciones_detalle WHERE cotizacion_id=?", (cot[0],))
+                cursor.execute("DELETE FROM cotizaciones WHERE cliente_id=?", (c_id,))
                 cursor.execute("DELETE FROM clientes WHERE id_cliente=?", (c_id,))
                 conexion.commit()
-                
-                # Registro en la cola de sincronización
-                registrar_en_cola_sync('clientes', 'DELETE', c_id, None)
-                
                 self.cargar_datos()
+                QMessageBox.information(self, "Éxito", "Cliente y cotizaciones eliminados correctamente.")
             except Exception as e:
-                QMessageBox.critical(self, "Error", str(e))
+                QMessageBox.critical(self, "Error Local", str(e))
             finally:
                 conexion.close()
+        

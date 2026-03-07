@@ -3,7 +3,8 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QAbstractItemView, QHeaderView, QDialog, QMessageBox, QGridLayout)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
-from base_datos.conexion import obtener_conexion, registrar_en_cola_sync
+import requests
+from base_datos.conexion import obtener_conexion,forzar_descarga_nube,operacion_crud_nube
 
 class DialogoProveedor(QDialog):
     def __init__(self, parent=None, proveedor_datos=None):
@@ -102,59 +103,79 @@ class DialogoProveedor(QDialog):
             QMessageBox.warning(self, "Error", "El Nombre de la Empresa es obligatorio.")
             return
 
-        datos = (
-            nombre_empresa, self.input_vendedor.text().strip(), self.input_telefono.text().strip(),
-            self.input_correo.text().strip(), self.input_direccion.text().strip(),
-            self.input_tel_tienda.text().strip()
-        )
-        
         # Armamos el diccionario con los nombres exactos de las columnas
         datos_dict = {
-            "nombre_empresa": datos[0],
-            "vendedor_contacto": datos[1],
-            "num_telefono": datos[2],
-            "correo": datos[3],
-            "direccion": datos[4],
-            "tel_tienda_fisica": datos[5]
+            "nombre_empresa": nombre_empresa,
+            "vendedor_contacto": self.input_vendedor.text().strip(),
+            "num_telefono": self.input_telefono.text().strip(),
+            "correo": self.input_correo.text().strip(),
+            "direccion": self.input_direccion.text().strip(),
+            "tel_tienda_fisica": self.input_tel_tienda.text().strip()
         }
 
         conexion = obtener_conexion()
         cursor = conexion.cursor()
+
+        # --- REGLA 2: Prevención de Colisiones (Verificar antes de Guardar) ---
         try:
-            if self.proveedor_id:
+            resp = requests.get("https://api-pro-electro.pro-electro.workers.dev/api/estado_tabla?tabla=proveedores", timeout=3)
+            if resp.status_code == 200:
+                total_nube = resp.json().get("total", 0)
+                
+                cursor.execute("SELECT COUNT(*) FROM proveedores")
+                total_local = cursor.fetchone()[0]
+                
+                if total_nube > total_local:
+                    QMessageBox.information(self, "Sincronizando...", "Se detectaron nuevos datos en la nube de otros usuarios. Actualizando sistema...")
+                    forzar_descarga_nube()
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Error de Red", "Se perdió la conexión. No se puede guardar.")
+            conexion.close()
+            return
+        # ----------------------------------------------------------------------
+
+        try:
+            if self.proveedor_id: # UPDATE
+                # --- REGLA 3: NUBE PRIMERO ---
+                exito, msj = operacion_crud_nube('proveedores', 'UPDATE', datos_dict, self.proveedor_id)
+                if not exito: raise Exception(f"Error en la nube: {msj}")
+                
+                # --- LOCAL DESPUÉS DEL ÉXITO EN LA NUBE ---
                 cursor.execute("""
                     UPDATE proveedores SET 
                     nombre_empresa=?, vendedor_contacto=?, num_telefono=?, correo=?, 
                     direccion=?, tel_tienda_fisica=? 
                     WHERE id_prov=?
-                """, (*datos, self.proveedor_id))
+                """, (
+                    datos_dict["nombre_empresa"], datos_dict["vendedor_contacto"], 
+                    datos_dict["num_telefono"], datos_dict["correo"], 
+                    datos_dict["direccion"], datos_dict["tel_tienda_fisica"], 
+                    self.proveedor_id
+                ))
                 
-                conexion.commit()
-                registrar_en_cola_sync('proveedores', 'UPDATE', self.proveedor_id, datos_dict)
+            else: # INSERT
+                # --- REGLA 3: NUBE PRIMERO (Genera el ID) ---
+                exito, nuevo_id_nube = operacion_crud_nube('proveedores', 'INSERT', datos_dict)
+                if not exito: raise Exception(f"Error en la nube: {nuevo_id_nube}")
                 
-            else:
-                nuevo_id = self.generar_nuevo_id(cursor)
-                
-                # Para un nuevo registro, incluimos su Primary Key en el diccionario
-                datos_dict["id_prov"] = nuevo_id
-                
+                # --- LOCAL USANDO EL ID MAESTRO DE LA NUBE ---
                 cursor.execute("""
                     INSERT INTO proveedores (
                     id_prov, nombre_empresa, vendedor_contacto, num_telefono, 
                     correo, direccion, tel_tienda_fisica
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (nuevo_id, *datos))
+                """, (
+                    nuevo_id_nube, datos_dict["nombre_empresa"], datos_dict["vendedor_contacto"],
+                    datos_dict["num_telefono"], datos_dict["correo"],
+                    datos_dict["direccion"], datos_dict["tel_tienda_fisica"]
+                ))
                 
-                conexion.commit()
-                registrar_en_cola_sync('proveedores', 'INSERT', nuevo_id, datos_dict)
-            
+            conexion.commit()
             self.accept()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"No se pudo guardar: {str(e)}")
+            QMessageBox.critical(self, "Error", f"No se pudo guardar:\n{str(e)}")
         finally:
             conexion.close()
-
-
 class VistaProveedores(QWidget):
     def __init__(self):
         super().__init__()
@@ -300,30 +321,77 @@ class VistaProveedores(QWidget):
         self.editar_proveedor(proveedor_datos)
 
     def agregar_proveedor(self):
+        # --- REGLA 1: Bloqueo de UI sin internet ---
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
+            return
+        # ------------------------------------------
+
         if DialogoProveedor(self).exec():
             self.cargar_datos()
             QMessageBox.information(self, "Éxito", "Proveedor registrado.")
 
     def editar_proveedor(self, datos):
+        # --- REGLA 1: Bloqueo de UI sin internet ---
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
+            return
+        # ------------------------------------------
+
         if DialogoProveedor(self, datos).exec():
             self.cargar_datos()
             QMessageBox.information(self, "Éxito", "Proveedor actualizado.")
 
     def eliminar_proveedor(self, p_id, nombre):
-        if QMessageBox.question(self, "Eliminar", f"¿Eliminar a la empresa '{nombre}'?", 
-                                QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except requests.exceptions.RequestException:
+            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar.")
+            return
+
+        if QMessageBox.question(self, "Eliminar", f"¿Eliminar al proveedor '{nombre}' y todos sus productos?", QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            exito, mensaje = operacion_crud_nube('proveedores', 'DELETE', registro_id=p_id)
+            if not exito:
+                QMessageBox.critical(self, "Error en la Nube", f"No se pudo eliminar:\n{mensaje}")
+                return 
+            
+            # --- CASCADA Y RECÁLCULO LOCAL ---
             conexion = obtener_conexion()
             cursor = conexion.cursor()
             try:
+                cursor.execute("PRAGMA foreign_keys = OFF;")
+                
+                cursor.execute("SELECT codigo_producto FROM inventario WHERE proveedor_id=?", (p_id,))
+                prods = cursor.fetchall()
+                
+                for p in prods:
+                    cod = p[0]
+                    # Buscar y recalcular para cada producto del proveedor
+                    cursor.execute("SELECT DISTINCT cotizacion_id FROM cotizaciones_detalle WHERE codigo_producto=?", (cod,))
+                    cots_afectadas = [row[0] for row in cursor.fetchall()]
+                    
+                    cursor.execute("DELETE FROM cotizaciones_detalle WHERE codigo_producto=?", (cod,))
+                    
+                    for cid in cots_afectadas:
+                        cursor.execute("SELECT SUM(monto) FROM cotizaciones_detalle WHERE cotizacion_id=?", (cid,))
+                        subtotal = cursor.fetchone()[0] or 0.0
+                        total = subtotal * 1.16
+                        cursor.execute("UPDATE cotizaciones SET monto_total=? WHERE id_cotizacion=?", (total, cid))
+                
+                cursor.execute("DELETE FROM inventario WHERE proveedor_id=?", (p_id,))
                 cursor.execute("DELETE FROM proveedores WHERE id_prov=?", (p_id,))
+                
+                cursor.execute("PRAGMA foreign_keys = ON;")
                 conexion.commit()
                 
-                # Registramos el movimiento en la cola
-                registrar_en_cola_sync('proveedores', 'DELETE', p_id, None)
-                
                 self.cargar_datos()
-                QMessageBox.information(self, "Éxito", "Proveedor eliminado.")
+                QMessageBox.information(self, "Éxito", "Proveedor y productos eliminados. Cotizaciones recalculadas.")
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"No se pudo eliminar: {str(e)}")
+                QMessageBox.critical(self, "Error Local", str(e))
             finally:
                 conexion.close()
+        
