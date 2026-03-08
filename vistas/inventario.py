@@ -220,13 +220,17 @@ class DialogoProducto(QDialog):
 
     def cargar_proveedores(self):
         self.combo_prov.clear()
+        
+        # --- OPCIÓN POR DEFECTO ---
+        self.combo_prov.addItem("— Sin Proveedor —", None)
+        
         conn = obtener_conexion()
         cursor = conn.cursor()
         cursor.execute("SELECT id_prov, nombre_empresa FROM proveedores ORDER BY nombre_empresa")
         for pid, nombre in cursor.fetchall():
             self.combo_prov.addItem(f"{nombre}  ({pid})", pid)
         conn.close()
-
+        
     def guardar(self):
         codigo = self.input_codigo.text().strip()
         desc   = self.input_desc.text().strip()
@@ -253,12 +257,25 @@ class DialogoProducto(QDialog):
             conn.close()
             return
 
+        # --- REGLA 2: Prevención de Colisiones ---
+        try:
+            resp = requests.get("https://api-pro-electro.pro-electro.workers.dev/api/estado_tabla?tabla=inventario", timeout=3)
+            if resp.status_code == 200:
+                total_nube = resp.json().get("total", 0)
+                cursor.execute("SELECT COUNT(*) FROM inventario")
+                total_local = cursor.fetchone()[0]
+                if total_nube > total_local:
+                    QMessageBox.information(self, "Sincronizando...", "Se detectaron nuevos datos en la nube. Actualizando...")
+                    forzar_descarga_nube()
+        except:
+            pass
+        # -----------------------------------------
+
         try:
             if self.producto_id:
                 exito, msj = operacion_crud_nube('inventario', 'UPDATE', datos_dict, self.producto_id)
                 if not exito: raise Exception(msj)
 
-                # Apagamos reglas para evitar el error de SQLite
                 cursor.execute("PRAGMA foreign_keys = OFF;")
                 
                 cursor.execute("SELECT codigo_producto FROM inventario WHERE id=?", (self.producto_id,))
@@ -282,6 +299,7 @@ class DialogoProducto(QDialog):
             QMessageBox.critical(self, "Error", str(e))
         finally:
             conn.close()
+
 # Diálogo para gestionar (ver + eliminar) UM
 # ────────────────────────────────────────────────
 # ────────────────────────────────────────────────
@@ -415,12 +433,13 @@ class DialogoGestionUM(QDialog):
             
 
     def eliminar_um(self, uid, sigla):
-        """Elimina una unidad de medida y actualiza productos afectados de forma individual para la sincronización"""
+        """Elimina una unidad de medida y actualiza productos afectados usando Online-First"""
         try:
             requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
         except requests.exceptions.RequestException:
             QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar.")
             return
+
         conn = obtener_conexion()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM inventario WHERE um = ?", (sigla,))
@@ -429,66 +448,36 @@ class DialogoGestionUM(QDialog):
         
         mensaje = f"¿Eliminar la unidad '{sigla}'?"
         if count_productos > 0:
-            mensaje += f"\n\n📊 {count_productos} producto(s) utilizan esta UM.\n"
-            mensaje += "Se establecerán con valor 'S/U' (Sin Unidad)."
+            mensaje += f"\n\n📊 {count_productos} producto(s) utilizan esta UM.\nSe establecerán con valor 'S/U' (Sin Unidad)."
         
-        reply = QMessageBox.question(
-            self,
-            "Confirmar eliminación",
-            mensaje,
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
-        )
-        
-        if reply == QMessageBox.Yes:
+        if QMessageBox.question(self, "Confirmar eliminación", mensaje, QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            # --- ONLINE FIRST ---
             conn = obtener_conexion()
+            cursor = conn.cursor()
             try:
-                cursor = conn.cursor()
-                
-                # 1. Recuperar TODOS los datos de los productos que van a ser afectados
-                cursor.execute("""
-                    SELECT id, codigo_producto, descripcion, stock, proveedor_id, marca, precio_compra, precio_venta 
-                    FROM inventario WHERE um = ?
-                """, (sigla,))
+                # 1. Actualizar productos en la nube
+                cursor.execute("SELECT id FROM inventario WHERE um = ?", (sigla,))
                 productos_afectados = cursor.fetchall()
                 
-                # 2. Ejecutar la actualización y eliminación en SQLite local
+                for (p_id,) in productos_afectados:
+                    # Mandamos un UPDATE parcial solo del campo 'um'
+                    exito_p, msj_p = operacion_crud_nube('inventario', 'UPDATE', {"um": "S/U"}, p_id)
+                    if not exito_p: raise Exception(f"Fallo en nube al actualizar prod {p_id}: {msj_p}")
+                
+                # 2. Eliminar UM en la nube
+                exito, mensaje_api = operacion_crud_nube('catalogo_um', 'DELETE', registro_id=uid)
+                if not exito: raise Exception(f"Fallo en nube al eliminar UM: {mensaje_api}")
+                
+                # --- CASCADA LOCAL ---
                 cursor.execute("UPDATE inventario SET um = 'S/U' WHERE um = ?", (sigla,))
                 cursor.execute("DELETE FROM catalogo_um WHERE id = ?", (uid,))
-                
                 conn.commit()
-                
-                # 3. Registrar en la cola de sincronización los productos afectados UNO POR UNO
-                for prod in productos_afectados:
-                    p_id, p_codigo, p_desc, p_stock, p_prov_id, p_marca, p_compra, p_venta = prod
-                    
-                    prod_dict = {
-                        "codigo_producto": p_codigo,
-                        "descripcion": p_desc,
-                        "stock": p_stock,
-                        "um": "S/U", # El nuevo valor
-                        "proveedor_id": p_prov_id,
-                        "marca": p_marca,
-                        "precio_compra": p_compra,
-                        "precio_venta": p_venta
-                    }
-                
-                # 4. Registrar la eliminación de la unidad de medida principal
-                
-                # Recargar la tabla y combos
                 self.cargar_tabla()
-                
-                
-                QMessageBox.information(self, "Éxito", 
-                    f"Unidad '{sigla}' eliminada.\n"
-                    f"{count_productos} producto(s) actualizados a 'S/U'.")
-                
+                QMessageBox.information(self, "Éxito", f"Unidad '{sigla}' eliminada.\n{count_productos} producto(s) actualizados a 'S/U'.")
             except Exception as e:
-                conn.rollback()
-                QMessageBox.critical(self, "Error", f"No se pudo eliminar:\n{str(e)}")
+                QMessageBox.critical(self, "Error", str(e))
             finally:
                 conn.close()
-
 
 # ────────────────────────────────────────────────
 # Diálogo para editar Unidad de Medida
