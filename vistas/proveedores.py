@@ -155,6 +155,8 @@ class DialogoProveedor(QDialog):
                 
             else: # INSERT
                 # --- REGLA 3: NUBE PRIMERO (Genera el ID) ---
+                nuevo_id = self.generar_nuevo_id(cursor)
+                datos_dict["id_prov"] = nuevo_id
                 exito, nuevo_id_nube = operacion_crud_nube('proveedores', 'INSERT', datos_dict)
                 if not exito: raise Exception(f"Error en la nube: {nuevo_id_nube}")
                 

@@ -673,11 +673,15 @@ class DialogoCotizacion(QDialog):
             self.input_obra.setText(encabezado[5] if encabezado[5] else "")
             self.combo_estado.setCurrentText(encabezado[6])
 
+        # 🌟 SOLUCIÓN ANTI-DUPLICADOS (AUTO-REPARACIÓN) 🌟
+        # Agregamos "GROUP BY d.codigo_producto" para ignorar clones locales
+        # creados por errores en la sincronización de la base de datos.
         query_detalle = """
             SELECT d.codigo_producto, d.descripcion, d.cantidad, d.um, d.precio_unitario, d.disponibilidad, IFNULL(i.stock, 'N/D')
             FROM cotizaciones_detalle d
             LEFT JOIN inventario i ON d.codigo_producto = i.codigo_producto
             WHERE d.cotizacion_id=?
+            GROUP BY d.codigo_producto 
         """
         cursor.execute(query_detalle, (self.cotizacion_id,))
         detalles = cursor.fetchall()
@@ -694,7 +698,6 @@ class DialogoCotizacion(QDialog):
                 combo.setCurrentText(disp)
 
         conexion.close()
-
 # ==========================================
 # 2. VISTA PRINCIPAL (HISTORIAL)
 # ==========================================
@@ -847,11 +850,12 @@ class VistaCotizaciones(QWidget):
             btn_eliminar.setObjectName("botonEliminar")
             
             if self.viendo_externas:
-                btn_pdf.setDisabled(True)
+                #btn_pdf.setDisabled(True)
                 btn_editar.setDisabled(True)
                 btn_pdf.setToolTip("Sube la cotización a la nube primero")
                 btn_editar.setToolTip("Sube la cotización a la nube primero")
                 btn_eliminar.clicked.connect(lambda checked, c_id=id_cot, f=folio: self.eliminar_cotizacion_externa(c_id, f))
+                btn_pdf.clicked.connect(lambda checked, f=folio, es_externa=True: self.generar_pdf(f, es_externa))
             else:
                 btn_editar.clicked.connect(lambda checked, c_id=id_cot: self.editar_cotizacion(c_id))
                 btn_pdf.clicked.connect(lambda checked, f=folio: self.generar_pdf(f))
@@ -963,18 +967,22 @@ class VistaCotizaciones(QWidget):
         if dialogo.exec():
             self.cargar_datos()
 
-    def generar_pdf(self, folio):
+    def generar_pdf(self, folio, es_externa=False):
         try:
-            exito, mensaje_o_ruta = generar_pdf_cotizacion(folio, parent_widget=self)
+            # PASAMOS el flag de externa a la función de generación de PDF
+            exito, mensaje_o_ruta = generar_pdf_cotizacion(folio, es_externa, parent_widget=self)
+            
             if exito:
                 if mensaje_o_ruta == "Operación cancelada por el usuario":
                     return
+                    
                 respuesta = QMessageBox.question(
                     self,
                     "PDF Generado",
                     f"La cotización {folio} se generó correctamente en:\n{mensaje_o_ruta}\n\n¿Deseas abrir el archivo?",
                     QMessageBox.Yes | QMessageBox.No
                 )
+                
                 if respuesta == QMessageBox.Yes:
                     import os, sys, subprocess
                     try:
@@ -985,13 +993,14 @@ class VistaCotizaciones(QWidget):
                         else:
                             subprocess.run(['xdg-open', mensaje_o_ruta])
                     except Exception as e:
-                        QMessageBox.warning(self, "Error al abrir", f"No se pudo abrir el archivo automáticamente:\n{str(e)}\n\nPuedes encontrarlo en:\n{mensaje_o_ruta}")
+                        QMessageBox.warning(self, "Error al abrir", 
+                                        f"No se pudo abrir el archivo automáticamente:\n{str(e)}\n\nPuedes encontrarlo en:\n{mensaje_o_ruta}")
             else:
                 if mensaje_o_ruta != "Operación cancelada por el usuario":
                     QMessageBox.warning(self, "Error", mensaje_o_ruta)
+                    
         except Exception as e:
             QMessageBox.critical(self, "Error Fatal", f"Ocurrió un error al generar el PDF:\n{str(e)}")
-
     def eliminar_cotizacion(self, c_id, folio):
         # --- REGLA 1: Bloqueo de UI sin internet ---
         try:

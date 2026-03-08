@@ -131,11 +131,17 @@ class DialogoCliente(QDialog):
                 ))
                 
             else: # INSERT
-                # --- REGLA 3: NUBE PRIMERO (Genera el ID) ---
+                # 1. Generar el ID personalizado localmente ANTES de ir a la nube
+                nuevo_id = self.generar_nuevo_id(cursor)
+                
+                # 2. Agregar el ID al diccionario para que la API lo reciba
+                datos_dict["id_cliente"] = nuevo_id
+                
+                # --- REGLA 3: NUBE PRIMERO ---
                 exito, nuevo_id_nube = operacion_crud_nube('clientes', 'INSERT', datos_dict)
                 if not exito: raise Exception(f"Error en la nube: {nuevo_id_nube}")
                 
-                # --- LOCAL USANDO EL ID MAESTRO DE LA NUBE ---
+                # --- LOCAL USANDO EL ID QUE ENVIAMOS/RECIBIMOS ---
                 cursor.execute("""
                     INSERT INTO clientes (id_cliente, nombre_completo, rfc, direccion, colonia, 
                     poblacion, cp, telefono, correo, cfdi, regimen, contacto) 

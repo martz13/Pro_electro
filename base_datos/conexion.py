@@ -197,8 +197,23 @@ def forzar_descarga_nube():
         
         if respuesta.status_code == 200 and respuesta.json().get("success"):
             data = respuesta.json()["data"]
+            
+            # 1. Apagamos las llaves foráneas para poder borrar sin restricciones
             cursor.execute("PRAGMA foreign_keys = OFF;")
             
+            # 🌟 2. LA SOLUCIÓN: VACIAR LAS TABLAS LOCALES PRIMERO 🌟
+            # De esta manera nos aseguramos de no tener registros duplicados o fantasmas
+            cursor.execute("DELETE FROM cotizaciones_detalle")
+            cursor.execute("DELETE FROM cotizaciones")
+            cursor.execute("DELETE FROM inventario")
+            cursor.execute("DELETE FROM proveedores")
+            cursor.execute("DELETE FROM clientes")
+            cursor.execute("DELETE FROM usuarios")
+            cursor.execute("DELETE FROM catalogo_um")
+            # Nota: No borramos datos_fiscales si prefieres mantener la configuración local, 
+            # o puedes agregar 'cursor.execute("DELETE FROM datos_fiscales")' si también quieres plancharla.
+            
+            # 3. Función para insertar los nuevos datos limpios
             def insertar_lote(tabla, registros):
                 if not registros: return
                 columnas = ", ".join(registros[0].keys())
@@ -207,6 +222,7 @@ def forzar_descarga_nube():
                 valores = [tuple(r.values()) for r in registros]
                 cursor.executemany(query, valores)
             
+            # 4. Inyectar la información fresca de la nube
             insertar_lote("usuarios", data.get("usuarios", []))
             insertar_lote("clientes", data.get("clientes", []))
             insertar_lote("proveedores", data.get("proveedores", []))
@@ -214,14 +230,17 @@ def forzar_descarga_nube():
             insertar_lote("cotizaciones", data.get("cotizaciones", []))
             insertar_lote("cotizaciones_detalle", data.get("cotizaciones_detalle", []))
             insertar_lote("catalogo_um", data.get("catalogo_um", []))
+            # insertar_lote("datos_fiscales", data.get("datos_fiscales", [])) # Descomentar si decides borrarla arriba
             
+            # 5. Volvemos a encender las llaves foráneas
             cursor.execute("PRAGMA foreign_keys = ON;")
             conexion.commit()
+            print("✅ Descarga forzada completada. La base local es ahora un espejo idéntico a la nube.")
+            
     except Exception as e:
         print(f"Error al forzar descarga: {e}")
     finally:
         conexion.close()
-
 def procesar_arranque_app():
     """Se ejecuta al abrir el sistema. Sube cotizaciones offline y baja lo más nuevo."""
     import requests
