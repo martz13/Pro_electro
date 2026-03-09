@@ -1,10 +1,10 @@
 import os
 import requests
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                               QPushButton, QStackedWidget, QLabel, QMessageBox)
+                               QPushButton, QStackedWidget, QLabel, QMessageBox,QProgressDialog)
 from PySide6.QtGui import QPixmap
 from PySide6.QtCore import Qt
-from base_datos.conexion import obtener_conexion
+from base_datos.conexion import obtener_conexion,SyncThread
 
 from vistas.usuarios import VistaUsuarios
 from vistas.clientes import VistaClientes
@@ -145,77 +145,51 @@ class MainWindow(QMainWindow):
     # ==========================================
     # LÓGICA DE SINCRONIZACIÓN MANUAL
     # ==========================================
+    # ==========================================
+    # LÓGICA DE SINCRONIZACIÓN MANUAL (CON BARRA)
+    # ==========================================
     def forzar_sincronizacion(self):
         respuesta = QMessageBox.question(
             self, "Actualizar Datos",
-            "¿Deseas descargar los datos más recientes de la nube?\n\nEsto actualizará inventarios, clientes y cotizaciones en esta computadora.",
+            "¿Deseas sincronizar los datos con la nube?\n\nEsto subirá las cotizaciones pendientes y descargará la base de datos más reciente.",
             QMessageBox.Yes | QMessageBox.No
         )
         
         if respuesta == QMessageBox.No:
             return
 
-        # Cambiamos visualmente el botón para que el usuario sepa que está cargando
-        self.btn_sync.setText("⏳ Descargando...")
+        self.btn_sync.setText("⏳ Sincronizando...")
         self.btn_sync.setEnabled(False)
-        self.repaint() # Obligamos a la ventana a actualizar el texto del botón al instante
 
-        try:
-            URL_API_PULL = "https://api-pro-electro.pro-electro.workers.dev/api/descargar_todo"
-            respuesta_nube = requests.get(URL_API_PULL, timeout=15)
+        self.progreso_sync = QProgressDialog("Conectando con la nube...", None, 0, 100, self)
+        self.progreso_sync.setWindowTitle("Sincronizando Base de Datos")
+        self.progreso_sync.setWindowModality(Qt.WindowModal)
+        self.progreso_sync.setMinimumDuration(0)
+        self.progreso_sync.setValue(0)
+
+        self.hilo_sync = SyncThread()
+        self.hilo_sync.progress.connect(self.actualizar_progreso)
+        self.hilo_sync.finished.connect(self.finalizar_sincronizacion)
+        self.hilo_sync.start()
+
+    def actualizar_progreso(self, valor, texto):
+        self.progreso_sync.setValue(valor)
+        self.progreso_sync.setLabelText(texto)
+
+    def finalizar_sincronizacion(self, exito, mensaje):
+        self.progreso_sync.close()
+        self.btn_sync.setText("🔄 Sincronizar")
+        self.btn_sync.setEnabled(True)
+        
+        if exito:
+            # Refrescar la pantalla actual para que aparezcan los datos recién descargados
+            idx_actual = self.contenedor_vistas.currentIndex()
+            self.cambiar_vista(idx_actual)
+            QMessageBox.information(self, "Sincronización Exitosa", mensaje)
+        else:
+            QMessageBox.warning(self, "Aviso", mensaje)
             
-            if respuesta_nube.status_code == 200:
-                datos_nube = respuesta_nube.json()
-                
-                if datos_nube.get("success"):
-                    data = datos_nube["data"]
-                    
-                    conexion = obtener_conexion()
-                    cursor = conexion.cursor()
-                    cursor.execute("PRAGMA foreign_keys = OFF;")
-                    
-                    # Función para insertar datos masivamente reemplazando los locales viejos
-                    def insertar_lote(tabla, registros):
-                        if not registros: return
-                        columnas = ", ".join(registros[0].keys())
-                        placeholders = ", ".join(["?"] * len(registros[0]))
-                        query = f"INSERT OR REPLACE INTO {tabla} ({columnas}) VALUES ({placeholders})"
-                        valores = [tuple(r.values()) for r in registros]
-                        cursor.executemany(query, valores)
-                    
-                    # Ejecutamos las inserciones
-                    insertar_lote("usuarios", data.get("usuarios", []))
-                    insertar_lote("clientes", data.get("clientes", []))
-                    insertar_lote("proveedores", data.get("proveedores", []))
-                    insertar_lote("inventario", data.get("inventario", []))
-                    insertar_lote("cotizaciones", data.get("cotizaciones", []))
-                    insertar_lote("cotizaciones_detalle", data.get("cotizaciones_detalle", []))
-                    insertar_lote("catalogo_um", data.get("catalogo_um", []))
-                    insertar_lote("datos_fiscales", data.get("datos_fiscales", []))
-                    
-                    cursor.execute("PRAGMA foreign_keys = ON;")
-                    conexion.commit()
-                    conexion.close()
-
-                    # Refrescar la pantalla actual para que aparezcan los datos recién descargados
-                    idx_actual = self.contenedor_vistas.currentIndex()
-                    self.cambiar_vista(idx_actual)
-
-                    QMessageBox.information(self, "Sincronización Exitosa", "Los datos se han actualizado correctamente.")
-                else:
-                    QMessageBox.critical(self, "Error de Servidor", datos_nube.get('error', 'Error desconocido'))
-            else:
-                QMessageBox.warning(self, "Error", f"Problema de red. Status: {respuesta_nube.status_code}")
-                
-        except requests.exceptions.RequestException:
-            QMessageBox.warning(self, "Sin Conexión", "No se pudo conectar a la nube. Verifica tu conexión a internet.")
-        except Exception as e:
-            QMessageBox.critical(self, "Error Local", f"Ocurrió un error al guardar los datos:\n{str(e)}")
-        finally:
-            # Regresamos el botón a la normalidad
-            self.btn_sync.setText("🔄 Sincronizar")
-            self.btn_sync.setEnabled(True)
-
+            
     def cerrar_sesion(self):
         self.login_window.show()
         self.close()

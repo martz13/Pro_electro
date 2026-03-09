@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 import threading
 import requests
+from PySide6.QtCore import QThread, Signal
 
 # ==========================================
 # 1. RUTAS INTELIGENTES PARA EVITAR PÉRDIDA DE DATOS
@@ -126,122 +127,7 @@ def inicializar_bd():
 
     conexion.close()
     
-def realizar_descarga_inicial():
-    """Descarga toda la BD de la nube si la instalación local es nueva (inventario vacío)."""
-    conexion = obtener_conexion()
-    cursor = conexion.cursor()
-    
-    try:
-        # Verificamos si la base de datos ya tiene información (usamos inventario como referencia)
-        cursor.execute("SELECT COUNT(*) FROM inventario")
-        if cursor.fetchone()[0] > 0:
-            # Ya hay datos, no necesitamos descargar nada
-            return
 
-        print("Iniciando descarga inicial desde la nube...")
-        URL_API_PULL = "https://api-pro-electro.pro-electro.workers.dev/api/descargar_todo"
-        
-        respuesta = requests.get(URL_API_PULL, timeout=15) # Damos más tiempo porque son muchos datos
-        
-        if respuesta.status_code == 200:
-            datos_nube = respuesta.json()
-            
-            if datos_nube.get("success"):
-                data = datos_nube["data"]
-                
-                # Desactivar temporalmente las llaves foráneas para inserción masiva más rápida
-                cursor.execute("PRAGMA foreign_keys = OFF;")
-                
-                # Función auxiliar para insertar dinámicamente
-                def insertar_lote(tabla, registros):
-                    if not registros: return
-                    columnas = ", ".join(registros[0].keys())
-                    placeholders = ", ".join(["?"] * len(registros[0]))
-                    query = f"INSERT OR REPLACE INTO {tabla} ({columnas}) VALUES ({placeholders})"
-                    
-                    # Convertimos la lista de diccionarios en lista de tuplas
-                    valores = [tuple(r.values()) for r in registros]
-                    cursor.executemany(query, valores)
-                
-                # Insertamos las tablas (El orden importa lógicamente, aunque PRAGMA esté OFF)
-                insertar_lote("usuarios", data.get("usuarios", []))
-                insertar_lote("clientes", data.get("clientes", []))
-                insertar_lote("proveedores", data.get("proveedores", []))
-                insertar_lote("inventario", data.get("inventario", []))
-                insertar_lote("cotizaciones", data.get("cotizaciones", []))
-                insertar_lote("cotizaciones_detalle", data.get("cotizaciones_detalle", []))
-                insertar_lote("catalogo_um", data.get("catalogo_um", []))
-                insertar_lote("datos_fiscales", data.get("datos_fiscales", []))
-                
-                # Reactivamos las llaves foráneas
-                cursor.execute("PRAGMA foreign_keys = ON;")
-                conexion.commit()
-                print("✅ Descarga inicial completada exitosamente. Base de datos sincronizada.")
-            else:
-                print(f"Error en los datos de la nube: {datos_nube.get('error')}")
-                
-    except requests.exceptions.RequestException as e:
-        print(f"⚠️ No hay internet para la descarga inicial. El sistema iniciará vacío. Detalle: {e}")
-    except Exception as e:
-        print(f"❌ Error durante la descarga inicial: {str(e)}")
-    finally:
-        conexion.close()
-        
-def forzar_descarga_nube():
-    """Descarga e inyecta la BD de la nube sobreescribiendo los datos locales viejos."""
-    conexion = obtener_conexion()
-    cursor = conexion.cursor()
-    try:
-        URL_API_PULL = "https://api-pro-electro.pro-electro.workers.dev/api/descargar_todo"
-        respuesta = requests.get(URL_API_PULL, timeout=10)
-        
-        if respuesta.status_code == 200 and respuesta.json().get("success"):
-            data = respuesta.json()["data"]
-            
-            # 1. Apagamos las llaves foráneas para poder borrar sin restricciones
-            cursor.execute("PRAGMA foreign_keys = OFF;")
-            
-            # 🌟 2. LA SOLUCIÓN: VACIAR LAS TABLAS LOCALES PRIMERO 🌟
-            # De esta manera nos aseguramos de no tener registros duplicados o fantasmas
-            cursor.execute("DELETE FROM cotizaciones_detalle")
-            cursor.execute("DELETE FROM cotizaciones")
-            cursor.execute("DELETE FROM inventario")
-            cursor.execute("DELETE FROM proveedores")
-            cursor.execute("DELETE FROM clientes")
-            cursor.execute("DELETE FROM usuarios")
-            cursor.execute("DELETE FROM catalogo_um")
-            # Nota: No borramos datos_fiscales si prefieres mantener la configuración local, 
-            # o puedes agregar 'cursor.execute("DELETE FROM datos_fiscales")' si también quieres plancharla.
-            
-            # 3. Función para insertar los nuevos datos limpios
-            def insertar_lote(tabla, registros):
-                if not registros: return
-                columnas = ", ".join(registros[0].keys())
-                placeholders = ", ".join(["?"] * len(registros[0]))
-                query = f"INSERT OR REPLACE INTO {tabla} ({columnas}) VALUES ({placeholders})"
-                valores = [tuple(r.values()) for r in registros]
-                cursor.executemany(query, valores)
-            
-            # 4. Inyectar la información fresca de la nube
-            insertar_lote("usuarios", data.get("usuarios", []))
-            insertar_lote("clientes", data.get("clientes", []))
-            insertar_lote("proveedores", data.get("proveedores", []))
-            insertar_lote("inventario", data.get("inventario", []))
-            insertar_lote("cotizaciones", data.get("cotizaciones", []))
-            insertar_lote("cotizaciones_detalle", data.get("cotizaciones_detalle", []))
-            insertar_lote("catalogo_um", data.get("catalogo_um", []))
-            # insertar_lote("datos_fiscales", data.get("datos_fiscales", [])) # Descomentar si decides borrarla arriba
-            
-            # 5. Volvemos a encender las llaves foráneas
-            cursor.execute("PRAGMA foreign_keys = ON;")
-            conexion.commit()
-            print("✅ Descarga forzada completada. La base local es ahora un espejo idéntico a la nube.")
-            
-    except Exception as e:
-        print(f"Error al forzar descarga: {e}")
-    finally:
-        conexion.close()
-def procesar_arranque_app():
     """Se ejecuta al abrir el sistema. Sube cotizaciones offline y baja lo más nuevo."""
     import requests
     conexion = obtener_conexion()
@@ -300,3 +186,117 @@ def procesar_arranque_app():
         print(f"Error en arranque: {e}")
     finally:
         conexion.close()
+        
+class SyncThread(QThread):
+    """Hilo en segundo plano para sincronizar sin congelar la pantalla"""
+    progress = Signal(int, str)
+    finished = Signal(bool, str)
+
+    def run(self):
+        exito, msj = sincronizar_datos_nube(lambda val, txt: self.progress.emit(val, txt))
+        self.finished.emit(exito, msj)
+
+def forzar_descarga_nube():
+    """Mantenemos esta función por compatibilidad con la Regla 2 (Colisiones) en las demás vistas"""
+    sincronizar_datos_nube()
+
+def sincronizar_datos_nube(progress_callback=None):
+    """Descarga e inyecta la BD calculando el progreso del 0 al 100%."""
+    def emit(val, text):
+        if progress_callback:
+            progress_callback(val, text)
+    
+    try:
+        emit(5, "Verificando conexión a internet...")
+        requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+    except:
+        return False, "Sin conexión a internet. Trabajando en modo local."
+
+    conexion = obtener_conexion()
+    try:
+        cursor = conexion.cursor()
+        
+        # 1. Subir cotizaciones offline
+        emit(15, "Sincronizando cotizaciones offline...")
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cotizaciones_ext'")
+        if cursor.fetchone():
+            cursor.execute("SELECT * FROM cotizaciones_ext")
+            cotizaciones_ext = cursor.fetchall()
+            
+            if cotizaciones_ext:
+                emit(25, "Subiendo cotizaciones pendientes...")
+                payload = {"cotizaciones": []}
+                for cot in cotizaciones_ext:
+                    c_id, folio, fecha, cli_id, vend, oc, obra, estado, monto = cot
+                    cursor.execute("SELECT * FROM cotizaciones_detalle_ext WHERE cotizacion_id=?", (c_id,))
+                    detalles_ext = cursor.fetchall()
+                    
+                    lista_detalles = []
+                    for det in detalles_ext:
+                        lista_detalles.append({
+                            "codigo_producto": det[2], "descripcion": det[3], "cantidad": det[4],
+                            "um": det[5], "precio_unitario": det[6], "monto": det[7], "disponibilidad": det[8]
+                        })
+                        
+                    payload["cotizaciones"].append({
+                        "folio": folio, "fecha": fecha, "cliente_id": cli_id, "vendedor": vend,
+                        "oc": oc, "obra": obra, "estado": estado, "monto_total": monto,
+                        "detalles": lista_detalles
+                    })
+
+                URL_SUBIR_EXT = "https://api-pro-electro.pro-electro.workers.dev/api/subir_cotizaciones_ext"
+                resp = requests.post(URL_SUBIR_EXT, json=payload, timeout=15)
+                
+                if resp.status_code == 200 and resp.json().get("success"):
+                    cursor.execute("DELETE FROM cotizaciones_detalle_ext")
+                    cursor.execute("DELETE FROM cotizaciones_ext")
+                    conexion.commit()
+        
+        # 2. Descargar BD
+        emit(45, "Descargando base de datos actualizada...")
+        URL_API_PULL = "https://api-pro-electro.pro-electro.workers.dev/api/descargar_todo"
+        respuesta = requests.get(URL_API_PULL, timeout=20)
+        
+        if respuesta.status_code == 200 and respuesta.json().get("success"):
+            data = respuesta.json()["data"]
+            
+            emit(60, "Limpiando registros locales antiguos...")
+            cursor.execute("PRAGMA foreign_keys = OFF;")
+            
+            cursor.execute("DELETE FROM cotizaciones_detalle")
+            cursor.execute("DELETE FROM cotizaciones")
+            cursor.execute("DELETE FROM inventario")
+            cursor.execute("DELETE FROM proveedores")
+            cursor.execute("DELETE FROM clientes")
+            cursor.execute("DELETE FROM usuarios")
+            cursor.execute("DELETE FROM catalogo_um")
+            
+            def insertar_lote(tabla, registros):
+                if not registros: return
+                columnas = ", ".join(registros[0].keys())
+                placeholders = ", ".join(["?"] * len(registros[0]))
+                query = f"INSERT OR REPLACE INTO {tabla} ({columnas}) VALUES ({placeholders})"
+                valores = [tuple(r.values()) for r in registros]
+                cursor.executemany(query, valores)
+            
+            # Insertar en orden lógico
+            tablas = ["usuarios", "clientes", "proveedores", "inventario", "cotizaciones", "cotizaciones_detalle", "catalogo_um"]
+            for i, t in enumerate(tablas):
+                progreso = 60 + int(((i+1)/len(tablas)) * 35) # Matemática de 60% a 95%
+                emit(progreso, f"Instalando tabla: {t}...")
+                insertar_lote(t, data.get(t, []))
+            
+            cursor.execute("PRAGMA foreign_keys = ON;")
+            conexion.commit()
+            emit(100, "¡Base de datos lista!")
+            return True, "Sincronización completada exitosamente."
+        else:
+            return False, "Error en la respuesta del servidor."
+            
+    except Exception as e:
+        return False, f"Error durante la sincronización:\n{str(e)}"
+    finally:
+        conexion.close()     
+        
+        
+        

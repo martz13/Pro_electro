@@ -9,10 +9,10 @@ from email.mime.multipart import MIMEMultipart
 
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                                QLineEdit, QPushButton, QSpacerItem, QSizePolicy, 
-                               QMessageBox, QInputDialog)
+                               QMessageBox, QInputDialog,QProgressDialog)
 from PySide6.QtGui import QPixmap, QIcon
 from PySide6.QtCore import Qt, QSize
-from base_datos.conexion import obtener_conexion
+from base_datos.conexion import obtener_conexion,SyncThread
 from vistas.main_window import MainWindow
 
 class LoginWindow(QWidget):
@@ -184,19 +184,47 @@ class LoginWindow(QWidget):
                 return
 
         # 3. VERIFICAR LA CONTRASEÑA
+        # 3. VERIFICAR LA CONTRASEÑA
         if hash_guardado:
             if isinstance(hash_guardado, str):
                 hash_guardado = hash_guardado.encode('utf-8')
             
             if bcrypt.checkpw(password.encode('utf-8'), hash_guardado):
-                print(f"Inicio de sesión exitoso desde: {origen_login}") # Opcional: para depuración
-                self.main_window = MainWindow(self, rol_usuario)
-                self.main_window.show()
-                self.hide()
+                self.iniciar_sincronizacion(rol_usuario) # <-- AHORA LLAMA A LA BARRA DE PROGRESO
             else:
                 QMessageBox.warning(self, "Acceso Denegado", "Contraseña incorrecta.")
         else:
             QMessageBox.warning(self, "Acceso Denegado", "El correo ingresado no existe o no hay conexión.")
+
+    # ========================================================
+    # LÓGICA DE BARRA DE PROGRESO POST-LOGIN
+    # ========================================================
+    def iniciar_sincronizacion(self, rol_usuario):
+        self.progreso_sync = QProgressDialog("Conectando con la nube...", None, 0, 100, self)
+        self.progreso_sync.setWindowTitle("Sincronizando Base de Datos")
+        self.progreso_sync.setWindowModality(Qt.WindowModal)
+        self.progreso_sync.setMinimumDuration(0)
+        self.progreso_sync.setValue(0)
+        
+        self.hilo_sync = SyncThread()
+        self.hilo_sync.progress.connect(self.actualizar_progreso)
+        self.hilo_sync.finished.connect(lambda exito, msj: self.finalizar_sincronizacion(exito, msj, rol_usuario))
+        self.hilo_sync.start()
+
+    def actualizar_progreso(self, valor, texto):
+        self.progreso_sync.setValue(valor)
+        self.progreso_sync.setLabelText(texto)
+
+    def finalizar_sincronizacion(self, exito, mensaje, rol_usuario):
+        self.progreso_sync.close()
+        
+        if not exito:
+            # Si falla (sin internet), solo avisamos pero DEJAMOS ENTRAR al modo offline
+            QMessageBox.warning(self, "Aviso de Sincronización", f"{mensaje}\n\nIniciando sistema con los datos locales...")
+            
+        self.main_window = MainWindow(self, rol_usuario)
+        self.main_window.show()
+        self.hide()
     # ========================================================
     # MÉTODOS PARA RECUPERACIÓN DE CONTRASEÑA / ACCESO POR NIP
     # ========================================================
@@ -292,9 +320,7 @@ class LoginWindow(QWidget):
             if ok and nip_ingresado:
                 if nip_ingresado.strip() == nip:
                     QMessageBox.information(self, "Acceso Concedido", "NIP verificado correctamente. Bienvenido.")
-                    self.main_window = MainWindow(self, rol)
-                    self.main_window.show()
-                    self.hide()
+                    self.iniciar_sincronizacion(rol) # <-- AHORA LLAMA A LA BARRA DE PROGRESO
                 else:
                     QMessageBox.warning(self, "Acceso Denegado", "El NIP ingresado es incorrecto.")
                     
