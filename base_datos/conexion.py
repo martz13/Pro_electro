@@ -95,7 +95,6 @@ def inicializar_bd():
     usuario_existente = cursor.fetchone()
     
     if not usuario_existente:
-        # Encriptar la contraseña "admin123"
         password_plana = "admin123".encode('utf-8')
         password_hash = bcrypt.hashpw(password_plana, bcrypt.gensalt()).decode('utf-8')
         
@@ -103,90 +102,14 @@ def inicializar_bd():
             "INSERT INTO usuarios (nombre_completo, correo, password, rol) VALUES (?, ?, ?, ?)",
             ("Edwin Guerrero", "admin@proelectro.mx", password_hash, "Super admin")
         )
-        
-        id_nuevo_usuario = cursor.lastrowid
-        
-        datos_usuario = {
-            "id": id_nuevo_usuario,
-            "nombre_completo": "Edwin Guerrero",
-            "correo": "admin@proelectro.mx",
-            "password": password_hash,
-            "rol": "Super admin"
-        }
-        
-        # --- SOLUCIÓN AL DATABASE LOCKED ---
-        # Guardamos y liberamos la tabla usuarios PRIMERO
-        conexion.commit()
-        
-        # AHORA SÍ registramos en la cola (que abre su propia conexión internamente)
-#        registrar_en_cola_sync('usuarios', 'INSERT', id_nuevo_usuario, datos_usuario)
-        
-        print("✅ Usuario de prueba creado y encolado para la nube: admin@proelectro.mx")
-    else:
-        conexion.commit()
+        print("✅ Usuario local de emergencia creado: admin@proelectro.mx")
 
+    conexion.commit()
     conexion.close()
-    
 
-    """Se ejecuta al abrir el sistema. Sube cotizaciones offline y baja lo más nuevo."""
-    import requests
-    conexion = obtener_conexion()
-    cursor = conexion.cursor()
-    
-    try:
-        # 1. VERIFICAMOS SI HAY INTERNET
-        requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
-        
-        # 2. SUBIR COTIZACIONES EXTERNAS SI EXISTEN
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='cotizaciones_ext'")
-        if cursor.fetchone():
-            cursor.execute("SELECT * FROM cotizaciones_ext")
-            cotizaciones_ext = cursor.fetchall()
-            
-            if cotizaciones_ext:
-                print("Subiendo cotizaciones offline encontradas...")
-                payload = {"cotizaciones": []}
-                
-                for cot in cotizaciones_ext:
-                    c_id, folio, fecha, cli_id, vend, oc, obra, estado, monto = cot
-                    
-                    cursor.execute("SELECT * FROM cotizaciones_detalle_ext WHERE cotizacion_id=?", (c_id,))
-                    detalles_ext = cursor.fetchall()
-                    
-                    lista_detalles = []
-                    for det in detalles_ext:
-                        lista_detalles.append({
-                            "codigo_producto": det[2], "descripcion": det[3], "cantidad": det[4],
-                            "um": det[5], "precio_unitario": det[6], "monto": det[7], "disponibilidad": det[8]
-                        })
-                        
-                    payload["cotizaciones"].append({
-                        "folio": folio, "fecha": fecha, "cliente_id": cli_id, "vendedor": vend,
-                        "oc": oc, "obra": obra, "estado": estado, "monto_total": monto,
-                        "detalles": lista_detalles
-                    })
-
-                URL_SUBIR_EXT = "https://api-pro-electro.pro-electro.workers.dev/api/subir_cotizaciones_ext"
-                resp = requests.post(URL_SUBIR_EXT, json=payload, timeout=10)
-                
-                if resp.status_code == 200 and resp.json().get("success"):
-                    # Si se subieron bien, las borramos de la tabla temporal local
-                    cursor.execute("DELETE FROM cotizaciones_detalle_ext")
-                    cursor.execute("DELETE FROM cotizaciones_ext")
-                    conexion.commit()
-                    print("Cotizaciones offline subidas exitosamente.")
-        
-        # 3. SINCRONIZAR (DESCARGAR) LA BASE DE DATOS FRESCA
-        forzar_descarga_nube()
-        print("Base de datos sincronizada al arranque.")
-
-    except requests.exceptions.RequestException:
-        print("Iniciando en modo OFFLINE. No se pudo sincronizar el arranque.")
-    except Exception as e:
-        print(f"Error en arranque: {e}")
-    finally:
-        conexion.close()
-        
+# ==========================================
+# 3. HILOS Y LÓGICA DE SINCRONIZACIÓN VISUAL
+# ==========================================
 class SyncThread(QThread):
     """Hilo en segundo plano para sincronizar sin congelar la pantalla"""
     progress = Signal(int, str)
@@ -296,7 +219,5 @@ def sincronizar_datos_nube(progress_callback=None):
     except Exception as e:
         return False, f"Error durante la sincronización:\n{str(e)}"
     finally:
-        conexion.close()     
-        
-        
+        conexion.close()   
         
