@@ -501,6 +501,7 @@ class DialogoCotizacion(QDialog):
         self.monto_total_guardar = total
 
     def guardar_cotizacion(self):
+        import time
         if self.tabla_prod.rowCount() == 0:
             QMessageBox.warning(self, "Error", "Debes agregar al menos un producto.")
             return
@@ -515,7 +516,6 @@ class DialogoCotizacion(QDialog):
         obra = self.input_obra.text().strip()
         estado = self.combo_estado.currentText()
 
-        # 1. VERIFICAR CONEXIÓN A INTERNET
         hay_internet = True
         try:
             requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
@@ -544,8 +544,6 @@ class DialogoCotizacion(QDialog):
                 except:
                     pass
 
-                # --- REGLA 3: ONLINE-FIRST (NUBE PRIMERO) ---
-                folio = self.input_folio.text()
                 if self.cotizacion_id:
                     # UPDATE
                     datos_cotizacion = {
@@ -555,14 +553,12 @@ class DialogoCotizacion(QDialog):
                     exito, msj = operacion_crud_nube('cotizaciones', 'UPDATE', datos_cotizacion, self.cotizacion_id)
                     if not exito: raise Exception(f"Error en nube (Cotización): {msj}")
 
-                    # Borrar detalles viejos online y localmente
                     cursor.execute("SELECT id FROM cotizaciones_detalle WHERE cotizacion_id=?", (self.cotizacion_id,))
                     viejos = cursor.fetchall()
                     for v in viejos:
                         operacion_crud_nube('cotizaciones_detalle', 'DELETE', registro_id=v[0])
                     cursor.execute("DELETE FROM cotizaciones_detalle WHERE cotizacion_id=?", (self.cotizacion_id,))
                     
-                    # Actualizar encabezado local
                     cursor.execute("""
                         UPDATE cotizaciones SET fecha=?, cliente_id=?, vendedor=?, oc=?, obra=?, estado=?, monto_total=?
                         WHERE id_cotizacion=?
@@ -570,9 +566,12 @@ class DialogoCotizacion(QDialog):
                     
                     id_cotizacion_actual = self.cotizacion_id
                 else:
-                    # INSERT
+                    # INSERT (NUEVA COTIZACIÓN ONLINE)
+                    # Enviamos un folio temporal para que la nube asigne el ID sin marcar error de duplicado
+                    folio_temp = f"TEMP-{int(time.time())}" 
+                    
                     datos_cotizacion = {
-                        "folio": folio, "fecha": fecha, "cliente_id": cliente_id, "vendedor": vendedor,
+                        "folio": folio_temp, "fecha": fecha, "cliente_id": cliente_id, "vendedor": vendedor,
                         "oc": oc, "obra": obra, "estado": estado, "monto_total": self.monto_total_guardar
                     }
                     exito, nuevo_id = operacion_crud_nube('cotizaciones', 'INSERT', datos_cotizacion)
@@ -580,10 +579,13 @@ class DialogoCotizacion(QDialog):
                     
                     id_cotizacion_actual = nuevo_id
                     
+                    # 🌟 EMPATAMOS EL FOLIO REAL CON EL ID QUE DEVOLVIÓ LA NUBE LOCALMENTE
+                    folio_real = f"F-{id_cotizacion_actual:05d}" 
+                    
                     cursor.execute("""
                         INSERT INTO cotizaciones (id_cotizacion, folio, fecha, cliente_id, vendedor, oc, obra, estado, monto_total)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (id_cotizacion_actual, folio, fecha, cliente_id, vendedor, oc, obra, estado, self.monto_total_guardar))
+                    """, (id_cotizacion_actual, folio_real, fecha, cliente_id, vendedor, oc, obra, estado, self.monto_total_guardar))
 
                 # Insertamos los detalles nuevos en nube y local
                 for fila in range(self.tabla_prod.rowCount()):
@@ -673,15 +675,15 @@ class DialogoCotizacion(QDialog):
             self.input_obra.setText(encabezado[5] if encabezado[5] else "")
             self.combo_estado.setCurrentText(encabezado[6])
 
-        # 🌟 SOLUCIÓN ANTI-DUPLICADOS (AUTO-REPARACIÓN) 🌟
-        # Agregamos "GROUP BY d.codigo_producto" para ignorar clones locales
-        # creados por errores en la sincronización de la base de datos.
+        # 🌟 SOLUCIÓN ANTI-DUPLICADOS Y PRESERVACIÓN DE ORDEN ORIGINAL 🌟
+        # ORDER BY MIN(d.id) ASC fuerza a SQLite a mostrar los productos en el orden exacto de inserción.
         query_detalle = """
             SELECT d.codigo_producto, d.descripcion, d.cantidad, d.um, d.precio_unitario, d.disponibilidad, IFNULL(i.stock, 'N/D')
             FROM cotizaciones_detalle d
             LEFT JOIN inventario i ON d.codigo_producto = i.codigo_producto
             WHERE d.cotizacion_id=?
             GROUP BY d.codigo_producto 
+            ORDER BY MIN(d.id) ASC
         """
         cursor.execute(query_detalle, (self.cotizacion_id,))
         detalles = cursor.fetchall()
@@ -698,6 +700,8 @@ class DialogoCotizacion(QDialog):
                 combo.setCurrentText(disp)
 
         conexion.close()
+
+
 # ==========================================
 # 2. VISTA PRINCIPAL (HISTORIAL)
 # ==========================================
