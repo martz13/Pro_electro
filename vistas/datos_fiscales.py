@@ -143,7 +143,6 @@ class VistaDatosFiscales(QWidget):
                 if total_nube > total_local:
                     QMessageBox.information(self, "Sincronizando...", "Se detectaron nuevos datos en la nube. Actualizando sistema...")
                     forzar_descarga_nube()
-                    # Dejamos que continúe
         except requests.exceptions.RequestException:
             QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
             return
@@ -156,7 +155,6 @@ class VistaDatosFiscales(QWidget):
         representante = self.input_representante.text().strip()
         terminos = self.input_terminos.toPlainText().strip()
 
-        # Armamos el diccionario
         datos_dict = {
             "nombre_empresa": nombre,
             "telefono": telefono,
@@ -167,11 +165,16 @@ class VistaDatosFiscales(QWidget):
         }
 
         # --- REGLA 3: NUBE PRIMERO ---
-        # El ID en esta tabla siempre es 1
+        # 1. Intentamos actualizar el registro 1
         exito, msj = operacion_crud_nube('datos_fiscales', 'UPDATE', datos_dict, 1)
+        
+        # 2. Si falla porque la tabla en la nube está completamente vacía, hacemos un INSERT
         if not exito:
-            QMessageBox.critical(self, "Error en la Nube", f"No se pudieron guardar los datos en el servidor:\n{msj}")
-            return # Detenemos la ejecución, no tocamos el local
+            datos_dict["id"] = 1
+            exito, msj = operacion_crud_nube('datos_fiscales', 'INSERT', datos_dict)
+            if not exito:
+                QMessageBox.critical(self, "Error en la Nube", f"No se pudieron guardar los datos en el servidor:\n{msj}")
+                return # Detenemos la ejecución, no tocamos el local
 
         # --- LOCAL DESPUÉS DEL ÉXITO EN LA NUBE ---
         conexion = obtener_conexion()
@@ -188,60 +191,5 @@ class VistaDatosFiscales(QWidget):
             QMessageBox.information(self, "Éxito", "Los datos fiscales se han guardado correctamente.")
         except Exception as e:
             QMessageBox.critical(self, "Error Local", f"No se pudieron guardar los datos localmente:\n{str(e)}")
-        finally:
-            conexion.close()
-        # --- REGLA 1 y 2: Bloqueo de UI y Prevención de Colisiones ---
-        try:
-            resp = requests.get("https://api-pro-electro.pro-electro.workers.dev/api/estado_tabla?tabla=datos_fiscales", timeout=3)
-            if resp.status_code == 200:
-                total_nube = resp.json().get("total", 0)
-                
-                conexion = obtener_conexion()
-                cursor = conexion.cursor()
-                cursor.execute("SELECT COUNT(*) FROM datos_fiscales")
-                total_local = cursor.fetchone()[0]
-                conexion.close()
-                
-                if total_nube > total_local:
-                    QMessageBox.information(self, "Sincronizando...", "Se detectaron nuevos datos en la nube. Actualizando sistema...")
-                    forzar_descarga_nube()
-                    # Dejamos que continúe
-        except requests.exceptions.RequestException:
-            QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar. Las modificaciones requieren conexión en tiempo real.")
-            return
-        # -------------------------------------------------------------
-
-        nombre = self.input_nombre.text().strip()
-        telefono = self.input_telefono.text().strip()
-        ubicacion = self.input_ubicacion.text().strip()
-        rfc = self.input_rfc.text().strip()
-        representante = self.input_representante.text().strip()
-        terminos = self.input_terminos.toPlainText().strip()
-
-        conexion = obtener_conexion()
-        cursor = conexion.cursor()
-
-        try:
-            # Actualizamos siempre el id=1
-            cursor.execute("""
-                UPDATE datos_fiscales 
-                SET nombre_empresa=?, telefono=?, ubicacion=?, rfc=?, representante_legal=?, terminos_condiciones=?
-                WHERE id=1
-            """, (nombre, telefono, ubicacion, rfc, representante, terminos))
-            
-            datos_dict = {
-                "nombre_empresa": nombre,
-                "telefono": telefono,
-                "ubicacion": ubicacion,
-                "rfc": rfc,
-                "representante_legal": representante,
-                "terminos_condiciones": terminos
-            }
-            
-            conexion.commit()
-            
-            QMessageBox.information(self, "Éxito", "Los datos fiscales se han guardado correctamente.")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"No se pudieron guardar los datos:\n{str(e)}")
         finally:
             conexion.close()

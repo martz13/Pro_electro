@@ -186,6 +186,9 @@ def sincronizar_datos_nube(progress_callback=None):
             emit(60, "Limpiando registros locales antiguos...")
             cursor.execute("PRAGMA foreign_keys = OFF;")
             
+            cursor.execute("DELETE FROM historial_compras")
+            cursor.execute("DELETE FROM ordenes_compra_detalle") # <-- NUEVO
+            cursor.execute("DELETE FROM ordenes_compra")
             cursor.execute("DELETE FROM cotizaciones_detalle")
             cursor.execute("DELETE FROM cotizaciones")
             cursor.execute("DELETE FROM inventario")
@@ -193,6 +196,7 @@ def sincronizar_datos_nube(progress_callback=None):
             cursor.execute("DELETE FROM clientes")
             cursor.execute("DELETE FROM usuarios")
             cursor.execute("DELETE FROM catalogo_um")
+            cursor.execute("DELETE FROM datos_fiscales")
             
             def insertar_lote(tabla, registros):
                 if not registros: return
@@ -203,7 +207,7 @@ def sincronizar_datos_nube(progress_callback=None):
                 cursor.executemany(query, valores)
             
             # Insertar en orden lógico
-            tablas = ["usuarios", "clientes", "proveedores", "inventario", "cotizaciones", "cotizaciones_detalle", "catalogo_um"]
+            tablas = ["usuarios", "clientes", "proveedores", "inventario", "historial_compras", "cotizaciones", "cotizaciones_detalle", "ordenes_compra", "ordenes_compra_detalle", "catalogo_um","datos_fiscales"]
             for i, t in enumerate(tablas):
                 progreso = 60 + int(((i+1)/len(tablas)) * 35) # Matemática de 60% a 95%
                 emit(progreso, f"Instalando tabla: {t}...")

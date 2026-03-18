@@ -117,6 +117,19 @@ class DialogoSeleccionarCliente(QDialog):
         else:
             QMessageBox.warning(self, "Aviso", "Por favor, selecciona un cliente de la lista.")
 
+class SpinBoxSinRueda(QSpinBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Up, Qt.Key_Down):
+            event.ignore()
+        else:
+            super().keyPressEvent(event)
+
 # ==========================================
 # 1. DIÁLOGO PARA CREAR/EDITAR COTIZACIÓN
 # ==========================================
@@ -165,6 +178,51 @@ class DialogoCotizacion(QDialog):
             self.cargar_cotizacion_existente()
         else:
             self.generar_folio()
+    def eventFilter(self, obj, event):
+    # Manejar eventos de teclado en los spinboxes de cantidad
+        if event.type() == event.Type.KeyPress and isinstance(obj, SpinBoxSinRueda):
+            key = event.key()
+            if key in (Qt.Key_Up, Qt.Key_Down):
+                # Encontrar la fila a la que pertenece este spinbox
+                for fila in range(self.tabla_prod.rowCount()):
+                    if self.tabla_prod.cellWidget(fila, 3) == obj:
+                        current_row = fila
+                        break
+                else:
+                    return super().eventFilter(obj, event)
+
+                if key == Qt.Key_Up and current_row > 0:
+                    nuevo_spin = self.tabla_prod.cellWidget(current_row - 1, 3)
+                    if nuevo_spin:
+                        self.tabla_prod.setCurrentCell(current_row - 1, 3)
+                        nuevo_spin.setFocus()
+                        return True
+                elif key == Qt.Key_Down and current_row < self.tabla_prod.rowCount() - 1:
+                    nuevo_spin = self.tabla_prod.cellWidget(current_row + 1, 3)
+                    if nuevo_spin:
+                        self.tabla_prod.setCurrentCell(current_row + 1, 3)
+                        nuevo_spin.setFocus()
+                        return True
+
+        # Manejar eventos de teclado en la tabla (para navegación general)
+        elif obj == self.tabla_prod and event.type() == event.Type.KeyPress:
+            key = event.key()
+            if key in (Qt.Key_Up, Qt.Key_Down):
+                current_row = self.tabla_prod.currentRow()
+                if key == Qt.Key_Up and current_row > 0:
+                    self.tabla_prod.setCurrentCell(current_row - 1, 3)
+                    spin = self.tabla_prod.cellWidget(current_row - 1, 3)
+                    if spin:
+                        spin.setFocus()
+                    return True
+                elif key == Qt.Key_Down and current_row < self.tabla_prod.rowCount() - 1:
+                    self.tabla_prod.setCurrentCell(current_row + 1, 3)
+                    spin = self.tabla_prod.cellWidget(current_row + 1, 3)
+                    if spin:
+                        spin.setFocus()
+                    return True
+
+        return super().eventFilter(obj, event)
 
     def crear_encabezado(self):
         grupo = QGroupBox("1. Datos Generales")
@@ -261,6 +319,7 @@ class DialogoCotizacion(QDialog):
         layout.addLayout(layout_buscador)
 
         self.tabla_prod = QTableWidget()
+        self.tabla_prod.installEventFilter(self)
         self.tabla_prod.setMinimumHeight(500) 
         
         columnas = ["Código", "Descripción", "Stock", "Cantidad", "UM", "Precio Unitario", "Monto", "Quitar", "Disponibilidad"]
@@ -436,7 +495,8 @@ class DialogoCotizacion(QDialog):
                 item.setTextAlignment(Qt.AlignVCenter | (Qt.AlignCenter if col in [0, 2, 4, 5, 6] else Qt.AlignLeft))
                 self.tabla_prod.setItem(fila, col, item)
 
-        spin_cantidad = QSpinBox() 
+        spin_cantidad = SpinBoxSinRueda()
+        spin_cantidad.installEventFilter(self)
         spin_cantidad.setMinimumHeight(40) 
         spin_cantidad.setStyleSheet("font-size: 15px;")
         spin_cantidad.setRange(1, 999999)  
@@ -460,6 +520,10 @@ class DialogoCotizacion(QDialog):
         combo_disponibilidad.setCurrentText("Disponible")
         combo_disponibilidad.setMinimumHeight(35)
         self.tabla_prod.setCellWidget(fila, 8, combo_disponibilidad) 
+
+        # Enfocar el spinbox de cantidad de la nueva fila
+        self.tabla_prod.setCurrentCell(fila, 3)
+        spin_cantidad.setFocus()
 
         self.actualizar_fila_y_totales(fila)
 

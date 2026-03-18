@@ -271,3 +271,48 @@ CREATE TABLE IF NOT EXISTS catalogo_um (
     sigla TEXT UNIQUE NOT NULL, -- Ej: 'm', 'pza', 'caja', 'rollo'
     descripcion TEXT -- Ej: 'Metro', 'Pieza', 'Caja', 'Rollo'
 );
+
+-- ==========================================
+-- 9. TABLAS DE ÓRDENES DE COMPRA
+-- ==========================================
+CREATE TABLE IF NOT EXISTS ordenes_compra (
+    id_orden INTEGER PRIMARY KEY AUTOINCREMENT,
+    folio TEXT UNIQUE NOT NULL, -- Formato: OC0001
+    fecha TEXT NOT NULL,
+    proveedor_id TEXT NOT NULL,
+    representante TEXT NOT NULL,
+    referencia TEXT,
+    direccion_envio TEXT,
+    telefono_envio TEXT,
+    monto_total REAL DEFAULT 0.0,
+    FOREIGN KEY (proveedor_id) REFERENCES proveedores(id_prov)
+);
+
+CREATE TABLE IF NOT EXISTS ordenes_compra_detalle (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    orden_id INTEGER NOT NULL,
+    codigo_producto TEXT NOT NULL,
+    descripcion TEXT NOT NULL,
+    cantidad INTEGER NOT NULL,
+    um TEXT NOT NULL,
+    precio_unitario REAL NOT NULL,
+    monto REAL NOT NULL,
+    FOREIGN KEY (orden_id) REFERENCES ordenes_compra(id_orden),
+    FOREIGN KEY (codigo_producto) REFERENCES inventario(codigo_producto)
+);
+
+-- ==========================================
+-- 10. TABLA HISTORIAL DE COMPRAS (INVENTARIO)
+-- ==========================================
+CREATE TABLE IF NOT EXISTS historial_compras (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo_producto TEXT NOT NULL,
+    proveedor_id TEXT NOT NULL,
+    proveedor_nombre TEXT NOT NULL,
+    precio_compra REAL NOT NULL,
+    cantidad REAL NOT NULL,
+    fecha TEXT NOT NULL,
+    monto_total REAL NOT NULL,
+    usuario TEXT NOT NULL,
+    FOREIGN KEY (codigo_producto) REFERENCES inventario(codigo_producto)
+);

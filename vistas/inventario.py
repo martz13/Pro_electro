@@ -3,7 +3,8 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
     QDialog, QMessageBox, QGridLayout, QComboBox, QListWidget, QListWidgetItem 
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QDate,QLocale
+from PySide6.QtWidgets import QDateEdit, QDoubleSpinBox, QSpinBox, QGroupBox, QFrame,QSizePolicy
 import requests
 from base_datos.conexion import obtener_conexion,forzar_descarga_nube,operacion_crud_nube
 
@@ -611,13 +612,310 @@ class DialogoEditarUM(QDialog):
         finally:
             conn.close()
 
+class DialogoSeleccionarProveedor(QDialog):
+    def __init__(self, parent=None, resultados=[]):
+        super().__init__(parent)
+        self.setWindowTitle("Seleccionar Proveedor")
+        self.setFixedSize(600, 350)
+        self.setModal(True)
+        self.proveedor_seleccionado = None
+        self.resultados = resultados
+
+        layout = QVBoxLayout(self)
+        lbl_info = QLabel("Selecciona el proveedor correcto:")
+        layout.addWidget(lbl_info)
+
+        self.tabla = QTableWidget()
+        self.tabla.setColumnCount(2)
+        self.tabla.setHorizontalHeaderLabels(["ID", "Empresa"])
+        self.tabla.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tabla.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tabla.setSelectionBehavior(QAbstractItemView.SelectRows)
+        layout.addWidget(self.tabla)
+
+        self.tabla.setRowCount(len(resultados))
+        for fila, prov in enumerate(resultados):
+            self.tabla.setItem(fila, 0, QTableWidgetItem(str(prov[0])))
+            self.tabla.setItem(fila, 1, QTableWidgetItem(str(prov[1])))
+
+        btn = QPushButton("Seleccionar")
+        btn.clicked.connect(self.seleccionar)
+        layout.addWidget(btn)
+
+    def seleccionar(self):
+        fila = self.tabla.currentRow()
+        if fila >= 0:
+            self.proveedor_seleccionado = self.resultados[fila]
+            self.accept()
+
+class DialogoAgregarHistorial(QDialog):
+    def __init__(self, parent=None, cod_prod="", desc_prod="", hist_id=None, usuario_actual=""):
+        super().__init__(parent)
+        self.hist_id = hist_id
+        self.cod_prod = cod_prod
+        self.usuario_actual = usuario_actual
+        self.setWindowTitle("Nuevo Historial de Compra" if not hist_id else "Editar Historial")
+        self.setFixedSize(650, 500)
+        self.setModal(True)
+        self.proveedor_seleccionado = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(15)
+
+        # Info del Producto
+        lbl_prod = QLabel(f"<b>Producto:</b> {cod_prod} - {desc_prod}")
+        lbl_prod.setStyleSheet("font-size: 14px; color: #2B6CB0; background-color: #EBF8FF; padding: 10px; border-radius: 5px;")
+        layout.addWidget(lbl_prod)
+
+        grid = QGridLayout()
+        grid.setSpacing(15)
+
+        # Buscador Proveedor
+        grid.addWidget(QLabel("Buscar Proveedor (Enter):"), 0, 0)
+        lay_prov = QHBoxLayout()
+        self.input_buscar_prov = QLineEdit()
+        self.input_buscar_prov.setPlaceholderText("ID o Nombre...")
+        self.input_buscar_prov.setMinimumHeight(38)
+        self.input_buscar_prov.returnPressed.connect(self.buscar_proveedor)
+        btn_buscar_prov = QPushButton("Buscar")
+        btn_buscar_prov.setAutoDefault(False)
+        btn_buscar_prov.clicked.connect(self.buscar_proveedor)
+        lay_prov.addWidget(self.input_buscar_prov)
+        lay_prov.addWidget(btn_buscar_prov)
+        grid.addLayout(lay_prov, 0, 1)
+
+        self.lbl_info_prov = QLabel("ID: - | Empresa: -")
+        self.lbl_info_prov.setStyleSheet("color: #4A5568; font-weight: bold;")
+        grid.addWidget(self.lbl_info_prov, 1, 0, 1, 2)
+
+        # Campos
+        grid.addWidget(QLabel("Precio de Compra:"), 2, 0)
+        self.spin_precio = QDoubleSpinBox()
+        self.spin_precio.setRange(0.0, 999999.99)
+        self.spin_precio.setMinimumHeight(38)
+        self.spin_precio.valueChanged.connect(self.calcular_total)
+        grid.addWidget(self.spin_precio, 2, 1)
+
+        grid.addWidget(QLabel("Cantidad:"), 3, 0)
+        self.spin_cant = QSpinBox()
+        self.spin_cant.setRange(1, 999999)
+        self.spin_cant.setSingleStep(1)
+        self.spin_cant.setMinimumHeight(38)
+        self.spin_cant.valueChanged.connect(self.calcular_total)
+        grid.addWidget(self.spin_cant, 3, 1)
+        self.spin_precio.setLocale(QLocale(QLocale.English, QLocale.UnitedStates))
+
+
+        grid.addWidget(QLabel("Fecha de Compra:"), 4, 0)
+        self.input_fecha = QDateEdit()
+        self.input_fecha.setCalendarPopup(True)
+        self.input_fecha.setDate(QDate.currentDate())
+        self.input_fecha.setMinimumHeight(38)
+        grid.addWidget(self.input_fecha, 4, 1)
+
+        grid.addWidget(QLabel("Monto Total:"), 5, 0)
+        self.lbl_total = QLabel("$0.00")
+        self.lbl_total.setStyleSheet("font-size: 16px; font-weight: bold; color: #2F855A;")
+        grid.addWidget(self.lbl_total, 5, 1)
+
+        grid.addWidget(QLabel("Registrado por:"), 6, 0)
+        self.label_admin = QLabel(self.usuario_actual)
+        self.label_admin.setStyleSheet("font-weight: bold; color: #2B6CB0; padding: 8px; background-color: #EBF8FF; border-radius: 4px;")
+        self.label_admin.setMinimumHeight(38)
+        grid.addWidget(self.label_admin, 6, 1)
+
+        layout.addLayout(grid)
+        layout.addStretch()
+
+        btn_guardar = QPushButton("Guardar Historial")
+        btn_guardar.setObjectName("botonPrincipal")
+        btn_guardar.setMinimumHeight(45)
+        btn_guardar.clicked.connect(self.guardar)
+        layout.addWidget(btn_guardar)
+
+        if self.hist_id:
+            self.cargar_datos_existentes()
+
+
+    def buscar_proveedor(self):
+        txt = self.input_buscar_prov.text().strip()
+        conn = obtener_conexion()
+        res = conn.cursor().execute("SELECT id_prov, nombre_empresa FROM proveedores WHERE id_prov LIKE ? OR nombre_empresa LIKE ?", (f"%{txt}%", f"%{txt}%")).fetchall()
+        conn.close()
+        if len(res) == 1:
+            self.set_proveedor(res[0])
+        elif len(res) > 1:
+            d = DialogoSeleccionarProveedor(self, res)
+            if d.exec() and d.proveedor_seleccionado:
+                self.set_proveedor(d.proveedor_seleccionado)
+
+    def set_proveedor(self, prov):
+        self.proveedor_seleccionado = prov
+        self.lbl_info_prov.setText(f"ID: {prov[0]} | Empresa: {prov[1]}")
+
+    def calcular_total(self):
+        self.monto_total = self.spin_precio.value() * self.spin_cant.value()
+        self.lbl_total.setText(f"${self.monto_total:,.2f}")
+
+    def cargar_datos_existentes(self):
+        conn = obtener_conexion()
+        d = conn.cursor().execute("SELECT proveedor_id, proveedor_nombre, precio_compra, cantidad, fecha, usuario FROM historial_compras WHERE id=?", (self.hist_id,)).fetchone()
+        conn.close()
+        if d:
+            self.set_proveedor((d[0], d[1]))
+            self.spin_precio.setValue(d[2])
+            self.spin_cant.setValue(d[3])
+            self.input_fecha.setDate(QDate.fromString(d[4], "yyyy-MM-dd"))
+            self.label_admin.setText(d[5])
+            self.calcular_total()
+
+    def guardar(self):
+        if not self.proveedor_seleccionado:
+            QMessageBox.warning(self, "Error", "Selecciona un proveedor.")
+            return
+
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except:
+            QMessageBox.warning(self, "Sin conexión", "Se requiere internet.")
+            return
+        if self.hist_id:
+            usuario = self.label_admin.text()   # el que ya estaba registrado
+        else:
+            usuario = self.usuario_actual
+
+
+        datos = {
+            "codigo_producto": self.cod_prod,
+            "proveedor_id": self.proveedor_seleccionado[0],
+            "proveedor_nombre": self.proveedor_seleccionado[1],
+            "precio_compra": self.spin_precio.value(),
+            "cantidad": self.spin_cant.value(),
+            "fecha": self.input_fecha.date().toString("yyyy-MM-dd"),
+            "monto_total": self.monto_total,
+            "usuario": usuario
+        }
+
+        conn = obtener_conexion()
+        cursor = conn.cursor()
+        try:
+            if self.hist_id:
+                exito, msj = operacion_crud_nube('historial_compras', 'UPDATE', datos, self.hist_id)
+                if not exito: raise Exception(msj)
+                cursor.execute("UPDATE historial_compras SET proveedor_id=?, proveedor_nombre=?, precio_compra=?, cantidad=?, fecha=?, monto_total=? WHERE id=?",
+                               (datos["proveedor_id"], datos["proveedor_nombre"], datos["precio_compra"], datos["cantidad"], datos["fecha"], datos["monto_total"], self.hist_id))
+            else:
+                exito, nuevo_id = operacion_crud_nube('historial_compras', 'INSERT', datos)
+                if not exito: raise Exception(nuevo_id)
+                cursor.execute("INSERT INTO historial_compras (id, codigo_producto, proveedor_id, proveedor_nombre, precio_compra, cantidad, fecha, monto_total, usuario) VALUES (?,?,?,?,?,?,?,?,?)",
+                               (nuevo_id, datos["codigo_producto"], datos["proveedor_id"], datos["proveedor_nombre"], datos["precio_compra"], datos["cantidad"], datos["fecha"], datos["monto_total"], datos["usuario"]))
+                
+                # 🌟 MAGIA: Si es registro nuevo y la fecha es hoy, sumamos al inventario local y nube
+                if datos["fecha"] == QDate.currentDate().toString("yyyy-MM-dd"):
+                    prod = cursor.execute("SELECT id, stock FROM inventario WHERE codigo_producto=?", (self.cod_prod,)).fetchone()
+                    if prod:
+                        nuevo_stock = prod[1] + datos["cantidad"]
+                        exito_s, msj_s = operacion_crud_nube('inventario', 'UPDATE', {"stock": nuevo_stock}, prod[0])
+                        if exito_s:
+                            cursor.execute("UPDATE inventario SET stock=? WHERE id=?", (nuevo_stock, prod[0]))
+
+            conn.commit()
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", str(e))
+        finally:
+            conn.close()
+
+class DialogoHistorialCompras(QDialog):
+    def __init__(self, parent=None, cod_prod="", desc_prod="", usuario_actual=""):
+        super().__init__(parent)
+        self.cod_prod = cod_prod
+        self.desc_prod = desc_prod
+        self.usuario_actual = usuario_actual
+        self.setWindowTitle(f"Historial de Compras - {cod_prod}")
+        self.setFixedSize(850, 500)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        header = QHBoxLayout()
+        lbl_titulo = QLabel(f"📦 {cod_prod} - {desc_prod}")
+        lbl_titulo.setStyleSheet("font-size: 16px; font-weight: bold; color: #2c3e50;")
+        header.addWidget(lbl_titulo)
+        
+        btn_nuevo = QPushButton("➕ Nueva Compra")
+        btn_nuevo.setObjectName("botonAgregar")
+        btn_nuevo.setMinimumHeight(35)
+        btn_nuevo.clicked.connect(self.nuevo_historial)
+        header.addStretch()
+        header.addWidget(btn_nuevo)
+        layout.addLayout(header)
+
+        self.tabla = QTableWidget()
+        self.tabla.setColumnCount(7)
+        self.tabla.setHorizontalHeaderLabels(["Fecha", "Proveedor", "Cant.", "P. Compra", "Total", "Registró", "Acciones"])
+        self.tabla.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tabla.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tabla.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tabla.setAlternatingRowColors(True)
+        self.tabla.setStyleSheet("QTableWidget { alternate-background-color: #F9FAFB; }")
+        layout.addWidget(self.tabla)
+
+        self.cargar_datos()
+
+    def cargar_datos(self):
+        conn = obtener_conexion()
+        filas = conn.cursor().execute("SELECT id, fecha, proveedor_nombre, cantidad, precio_compra, monto_total, usuario FROM historial_compras WHERE codigo_producto=? ORDER BY date(fecha) DESC, id DESC", (self.cod_prod,)).fetchall()
+        conn.close()
+
+        self.tabla.setRowCount(len(filas))
+        for i, f in enumerate(filas):
+            self.tabla.setItem(i, 0, QTableWidgetItem(f[1]))
+            self.tabla.setItem(i, 1, QTableWidgetItem(f[2]))
+            self.tabla.setItem(i, 2, QTableWidgetItem(f"{f[3]:g}"))
+            self.tabla.setItem(i, 3, QTableWidgetItem(f"${f[4]:.2f}"))
+            self.tabla.setItem(i, 4, QTableWidgetItem(f"${f[5]:.2f}"))
+            self.tabla.setItem(i, 5, QTableWidgetItem(f[6]))
+
+            w = QWidget()
+            lo = QHBoxLayout(w)
+            lo.setContentsMargins(5, 0, 5, 0)
+            btn_e = QPushButton("✏️"); btn_e.clicked.connect(lambda _, x=f[0]: self.editar(x))
+            btn_d = QPushButton("🗑️"); btn_d.clicked.connect(lambda _, x=f[0]: self.eliminar(x))
+            lo.addWidget(btn_e); lo.addWidget(btn_d)
+            self.tabla.setCellWidget(i, 6, w)
+
+    def nuevo_historial(self):
+        if DialogoAgregarHistorial(self, self.cod_prod, self.desc_prod, usuario_actual=self.usuario_actual).exec(): self.cargar_datos()
+
+    def editar(self, h_id):
+        if DialogoAgregarHistorial(self, self.cod_prod, self.desc_prod, h_id, self.usuario_actual).exec(): self.cargar_datos()
+
+    def eliminar(self, h_id):
+        try:
+            requests.get("https://api-pro-electro.pro-electro.workers.dev", timeout=3)
+        except:
+            QMessageBox.warning(self, "Sin conexión", "Se requiere internet.")
+            return
+
+        if QMessageBox.question(self, "Eliminar", "¿Borrar este registro del historial?", QMessageBox.Yes|QMessageBox.No) == QMessageBox.Yes:
+            exito, msj = operacion_crud_nube('historial_compras', 'DELETE', registro_id=h_id)
+            if exito:
+                conn = obtener_conexion()
+                conn.cursor().execute("DELETE FROM historial_compras WHERE id=?", (h_id,))
+                conn.commit(); conn.close()
+                self.cargar_datos()
+
 # ────────────────────────────────────────────────
 # Vista principal de Inventario
 # ────────────────────────────────────────────────
 class VistaInventario(QWidget):
-    def __init__(self, rol="Super admin"):
+    def __init__(self, rol="Super admin", usuario_actual=""):
         super().__init__()
         self.rol = rol
+        self.usuario_actual = usuario_actual
         layout = QVBoxLayout(self)
         layout.setContentsMargins(28, 24, 28, 24)
         layout.setSpacing(18)
@@ -656,25 +954,35 @@ class VistaInventario(QWidget):
         self.tabla.setHorizontalHeaderLabels(columnas)
 
         header = self.tabla.horizontalHeader()
-        header.setStretchLastSection(False)
 
         # Columnas fijas
         fixed = {
             0:  55,   # ID
-            1: 140,   # Código
+            1: 100,   # Código
             3:  80,   # Stock
             4:  65,   # UM
             7: 100,   # Costo
             8: 100,   # Venta
-            9: 220    # Acciones
+            9: 320    # Acciones
         }
+
         for col, ancho in fixed.items():
             header.setSectionResizeMode(col, QHeaderView.Fixed)
             self.tabla.setColumnWidth(col, ancho)
 
-        # Columnas que crecen
-        for col in [2, 5, 6]:  # Descripción, Proveedor, Marca
-            header.setSectionResizeMode(col, QHeaderView.Stretch)
+        # Columnas dinámicas (las importantes)
+        header.setSectionResizeMode(2, QHeaderView.Stretch)   # Descripción (crece)
+        header.setSectionResizeMode(6, QHeaderView.Stretch)   # Marca (crece)
+
+        # Ajuste automático de contenido
+        header.setSectionResizeMode(5, QHeaderView.ResizeToContents)  # Proveedor
+
+        # Permitir mover columnas
+        header.setSectionsMovable(True)
+
+        # 🔥 CLAVE: elimina el espacio vacío
+        header.setStretchLastSection(True)
+        
 
         self.tabla.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tabla.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -705,23 +1013,53 @@ class VistaInventario(QWidget):
     def crear_botones_accion(self, prod):
         widget = QWidget()
         lay = QHBoxLayout(widget)
-        lay.setContentsMargins(12, 4, 12, 4)
-        lay.setSpacing(10)
+        lay.setContentsMargins(2, 2, 2, 2)
+        lay.setSpacing(5)
+        lay.setAlignment(Qt.AlignCenter)
 
+        # Botón Editar
         btn_edit = QPushButton("✏️ Editar")
-        btn_edit.setObjectName("botonEditar")
+        btn_edit.setObjectName("botonEditar")  # Usa el estilo de la hoja global
+        
+        btn_edit.setMinimumHeight(28)
+        
+        btn_edit.setFixedSize(100, 30)
         btn_edit.clicked.connect(lambda _, p=prod: self.editar_producto(p))
 
+        # Botón Eliminar
         btn_del = QPushButton("🗑️ Eliminar")
-        btn_del.setObjectName("botonEliminar")
+        btn_del.setObjectName("botonEliminar")  # Usa el estilo de la hoja global
+        btn_del.setFixedSize(100, 30)
+        
+        btn_del.setMinimumHeight(28)
+        
         btn_del.clicked.connect(lambda _, pid=prod[0], d=prod[2]: self.eliminar_producto(pid, d))
 
-        lay.addStretch()
+        btn_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btn_del.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        
+
+        # Botón Historial (solo Super admin)
+        if self.rol == "Super admin":
+            btn_hist = QPushButton("📜 Historial")
+            btn_hist.setFixedSize(100, 30)
+            btn_hist.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            # Usar mismo estilo que botón editar/eliminar
+            
+            btn_hist.setMinimumHeight(28)
+            
+            btn_hist.setObjectName("botonEditar")
+            btn_hist.clicked.connect(lambda _, c=prod[1], d=prod[2]: self.abrir_historial(c, d))
+            lay.addWidget(btn_hist)
+
         lay.addWidget(btn_edit)
         lay.addWidget(btn_del)
-        lay.addStretch()
 
         return widget
+
+    def abrir_historial(self, codigo, descripcion):
+        DialogoHistorialCompras(self, codigo, descripcion, self.usuario_actual).exec()
+        self.cargar_datos()
 
     def cargar_datos(self):
         texto = f"%{self.buscar.text().strip()}%"

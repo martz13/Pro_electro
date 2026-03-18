@@ -190,7 +190,16 @@ class LoginWindow(QWidget):
                 hash_guardado = hash_guardado.encode('utf-8')
             
             if bcrypt.checkpw(password.encode('utf-8'), hash_guardado):
-                self.iniciar_sincronizacion(rol_usuario) # <-- AHORA LLAMA A LA BARRA DE PROGRESO
+                try:
+                    conn = obtener_conexion()
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT nombre_completo FROM usuarios WHERE correo = ?", (correo,))
+                    resultado = cursor.fetchone()
+                    nombre_usuario = resultado[0] if resultado else "Usuario"
+                    conn.close()
+                except Exception as e:
+                    nombre_usuario = "Usuario"
+                self.iniciar_sincronizacion(rol_usuario,nombre_usuario) # <-- AHORA LLAMA A LA BARRA DE PROGRESO
             else:
                 QMessageBox.warning(self, "Acceso Denegado", "Contraseña incorrecta.")
         else:
@@ -199,7 +208,8 @@ class LoginWindow(QWidget):
     # ========================================================
     # LÓGICA DE BARRA DE PROGRESO POST-LOGIN
     # ========================================================
-    def iniciar_sincronizacion(self, rol_usuario):
+    def iniciar_sincronizacion(self, rol_usuario,nombre_usuario):
+        self.nombre_usuario = nombre_usuario 
         self.progreso_sync = QProgressDialog("Conectando con la nube...", None, 0, 100, self)
         self.progreso_sync.setWindowTitle("Sincronizando Base de Datos")
         self.progreso_sync.setWindowModality(Qt.WindowModal)
@@ -208,21 +218,21 @@ class LoginWindow(QWidget):
         
         self.hilo_sync = SyncThread()
         self.hilo_sync.progress.connect(self.actualizar_progreso)
-        self.hilo_sync.finished.connect(lambda exito, msj: self.finalizar_sincronizacion(exito, msj, rol_usuario))
+        self.hilo_sync.finished.connect(lambda exito, msj: self.finalizar_sincronizacion(exito, msj, rol_usuario, nombre_usuario))
         self.hilo_sync.start()
 
     def actualizar_progreso(self, valor, texto):
         self.progreso_sync.setValue(valor)
         self.progreso_sync.setLabelText(texto)
 
-    def finalizar_sincronizacion(self, exito, mensaje, rol_usuario):
+    def finalizar_sincronizacion(self, exito, mensaje, rol_usuario,nombre_usuario):
         self.progreso_sync.close()
         
         if not exito:
             # Si falla (sin internet), solo avisamos pero DEJAMOS ENTRAR al modo offline
             QMessageBox.warning(self, "Aviso de Sincronización", f"{mensaje}\n\nIniciando sistema con los datos locales...")
             
-        self.main_window = MainWindow(self, rol_usuario)
+        self.main_window = MainWindow(self, rol_usuario, nombre_usuario) 
         self.main_window.show()
         self.hide()
     # ========================================================
@@ -251,12 +261,12 @@ class LoginWindow(QWidget):
             if rol == "Vendedor":
                 QMessageBox.information(self, "Recuperar Acceso", "Contactar al administrador del sistema al número +52 1 81 8255 2128")
             elif rol == "Super admin":
-                self.enviar_nip_y_validar(rol)
+                self.enviar_nip_y_validar(rol,correo)
 
         except Exception as e:
             QMessageBox.critical(self, "Error de Base de Datos", f"Hubo un problema al consultar el usuario:\n{str(e)}")
 
-    def enviar_nip_y_validar(self, rol):
+    def enviar_nip_y_validar(self, rol,correo):
         # Generar código NIP aleatorio de 4 dígitos
         nip = str(random.randint(1000, 9999))
         
@@ -319,8 +329,13 @@ class LoginWindow(QWidget):
             
             if ok and nip_ingresado:
                 if nip_ingresado.strip() == nip:
-                    QMessageBox.information(self, "Acceso Concedido", "NIP verificado correctamente. Bienvenido.")
-                    self.iniciar_sincronizacion(rol) # <-- AHORA LLAMA A LA BARRA DE PROGRESO
+                    # Obtener nombre del usuario (ya tenemos el correo)
+                    conn = obtener_conexion()
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT nombre_completo FROM usuarios WHERE correo = ?", (correo,))
+                    nombre_usuario = cursor.fetchone()[0]
+                    conn.close()
+                    self.iniciar_sincronizacion(rol, nombre_usuario)
                 else:
                     QMessageBox.warning(self, "Acceso Denegado", "El NIP ingresado es incorrecto.")
                     

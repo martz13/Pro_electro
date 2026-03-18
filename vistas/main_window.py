@@ -12,12 +12,14 @@ from vistas.proveedores import VistaProveedores
 from vistas.inventario import VistaInventario
 from vistas.cotizaciones import VistaCotizaciones
 from vistas.datos_fiscales import VistaDatosFiscales
+from vistas.ordenes_compra import VistaOrdenesCompra # <-- NUEVO
 
 class MainWindow(QMainWindow):
-    def __init__(self, login_window, rol="Super admin"):
+    def __init__(self, login_window, rol="Super admin", nombre_usuario=""):
         super().__init__()
         self.login_window = login_window
         self.rol = rol
+        self.nombre_usuario = nombre_usuario
         self.setWindowTitle("Pro Electro - Sistema de Gestión")
         self.resize(1024, 768)
         self.showMaximized()
@@ -51,7 +53,7 @@ class MainWindow(QMainWindow):
 
         # Botones de navegación principal
         self.botones_menu = []
-        opciones_menu = ["Usuarios", "Clientes", "Proveedores", "Inventario", "Cotización", "Datos Fiscales"]
+        opciones_menu = ["Usuarios", "Clientes", "Proveedores", "Inventario", "Cotización","Órdenes de Compra" ,"Datos Fiscales"]
         
         for index, opcion in enumerate(opciones_menu):
             btn = QPushButton(opcion)
@@ -110,11 +112,14 @@ class MainWindow(QMainWindow):
         self.vista_proveedores = VistaProveedores()
         self.contenedor_vistas.addWidget(self.vista_proveedores)
         
-        self.vista_inventario = VistaInventario(self.rol)
+        self.vista_inventario = VistaInventario(self.rol, self.nombre_usuario)
         self.contenedor_vistas.addWidget(self.vista_inventario)
         
         self.vista_cotizaciones = VistaCotizaciones()
         self.contenedor_vistas.addWidget(self.vista_cotizaciones)
+
+        self.vista_ordenes_compra = VistaOrdenesCompra()
+        self.contenedor_vistas.addWidget(self.vista_ordenes_compra)
         
         self.vista_datos_fiscales = VistaDatosFiscales()
         self.contenedor_vistas.addWidget(self.vista_datos_fiscales)
@@ -126,7 +131,7 @@ class MainWindow(QMainWindow):
 
     def cambiar_vista(self, index):
         """Cambia la vista y actualiza los datos si es necesario"""
-        if index == 3:  
+        if index == 3 and hasattr(self.vista_inventario, 'cargar_datos'):
             self.vista_inventario.cargar_datos()
         elif index == 0 and hasattr(self.vista_usuarios, 'cargar_datos'):
             self.vista_usuarios.cargar_datos()
@@ -136,6 +141,8 @@ class MainWindow(QMainWindow):
             self.vista_proveedores.cargar_datos()
         elif index == 4 and hasattr(self.vista_cotizaciones, 'cargar_datos'):
             self.vista_cotizaciones.cargar_datos()
+        elif index == 5 and hasattr(self.vista_ordenes_compra, 'cargar_datos'): # <-- NUEVO
+            self.vista_ordenes_compra.cargar_datos()
         
         self.contenedor_vistas.setCurrentIndex(index)
         
