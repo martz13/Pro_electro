@@ -66,7 +66,7 @@ class MainWindow(QMainWindow):
             btn.setCheckable(True)
             
             # Ocultar botones para Vendedor
-            if self.rol == "Vendedor" and opcion in ["Usuarios", "Proveedores", "Datos Fiscales"]:
+            if self.rol == "Vendedor" and opcion in ["Usuarios", "Proveedores", "Datos Fiscales","Órdenes de Compra"]:
                 btn.setVisible(False)
             
             btn.clicked.connect(lambda checked, idx=index: self.cambiar_vista(idx))

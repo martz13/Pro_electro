@@ -593,6 +593,13 @@ class DialogoCotizacion(QDialog):
         conexion = obtener_conexion()
         cursor = conexion.cursor()
 
+        # 🌟 NUEVA SEGURIDAD: Saber si ya estaba Aceptada para no restar 2 veces
+        estado_anterior = "Pendiente"
+        if self.cotizacion_id:
+            res_est = cursor.execute("SELECT estado FROM cotizaciones WHERE id_cotizacion=?", (self.cotizacion_id,)).fetchone()
+            if res_est: 
+                estado_anterior = res_est[0]
+
         try:
             if hay_internet:
                 # --- REGLA 2: Prevención de Colisiones ---
@@ -631,7 +638,6 @@ class DialogoCotizacion(QDialog):
                     id_cotizacion_actual = self.cotizacion_id
                 else:
                     # INSERT (NUEVA COTIZACIÓN ONLINE)
-                    # Enviamos un folio temporal para que la nube asigne el ID sin marcar error de duplicado
                     folio_temp = f"TEMP-{int(time.time())}" 
                     
                     datos_cotizacion = {
@@ -642,8 +648,6 @@ class DialogoCotizacion(QDialog):
                     if not exito: raise Exception(f"Error en nube (Cotización): {nuevo_id}")
                     
                     id_cotizacion_actual = nuevo_id
-                    
-                    # 🌟 EMPATAMOS EL FOLIO REAL CON EL ID QUE DEVOLVIÓ LA NUBE LOCALMENTE
                     folio_real = f"F-{id_cotizacion_actual:05d}" 
                     
                     cursor.execute("""
@@ -674,8 +678,25 @@ class DialogoCotizacion(QDialog):
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (id_det_nube, id_cotizacion_actual, codigo, desc, cantidad, um, precio_u, monto, disponibilidad))
 
+                    # 🌟 MAGIA: RESTAR DEL INVENTARIO SI CAMBIA A ACEPTADA 🌟
+                    # Si la estamos aceptando hoy, y antes no estaba aceptada: restamos stock
+                    if estado == 'Aceptada' and estado_anterior != 'Aceptada':
+                        prod = cursor.execute("SELECT id, stock FROM inventario WHERE codigo_producto=?", (codigo,)).fetchone()
+                        if prod:
+                            prod_id = prod[0]
+                            stock_actual = prod[1]
+                            
+                            # max(0, ...) asegura que nunca se ponga negativo aunque pidas más de lo que hay
+                            nuevo_stock = max(0, stock_actual - cantidad)
+                            
+                            # Sincronizamos resta en nube
+                            exito_s, msj_s = operacion_crud_nube('inventario', 'UPDATE', {"stock": nuevo_stock}, prod_id)
+                            if exito_s:
+                                # Sincronizamos resta local
+                                cursor.execute("UPDATE inventario SET stock=? WHERE id=?", (nuevo_stock, prod_id))
+
                 conexion.commit()
-                QMessageBox.information(self, "Éxito", "Cotización guardada y sincronizada correctamente en la nube.")
+                QMessageBox.information(self, "Éxito", "Cotización guardada e inventario actualizado correctamente.")
 
             else:
                 # --- FLUJO OFFLINE (TABLAS EXT) ---
