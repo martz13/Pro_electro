@@ -354,7 +354,7 @@ class DialogoOrdenCompra(QDialog):
         for r in cursor.fetchall():
             self.combo_admin.addItem(r[0])
         conn.close()
-        
+
     def eventFilter(self, obj, event):
         # Manejar eventos de teclado en los spinboxes de cantidad
         if event.type() == event.Type.KeyPress and isinstance(obj, SpinBoxSinRueda):
@@ -642,14 +642,14 @@ class DialogoOrdenCompra(QDialog):
                 cursor.execute("INSERT INTO ordenes_compra (id_orden, folio, fecha, proveedor_id, representante, referencia, direccion_envio, telefono_envio, monto_total) VALUES (?,?,?,?,?,?,?,?,?)",
                                (id_actual, folio_real, encabezado["fecha"], encabezado["proveedor_id"], encabezado["representante"], encabezado["referencia"], encabezado["direccion_envio"], encabezado["telefono_envio"], encabezado["monto_total"]))
 
-            # Insertar Detalles
+            # Insertar Detalles y hacer el MERGE AUTOMÁTICO
             for i in range(self.tabla.rowCount()):
                 det = {
                     "orden_id": id_actual,
                     "codigo_producto": self.tabla.item(i, 0).text(),
                     "descripcion": self.tabla.item(i, 1).text(),
-                    "cantidad": self.tabla.cellWidget(i, 2).value(), # Ahora es la col 2
-                    "um": self.tabla.item(i, 3).text(),              # Ahora es la col 3
+                    "cantidad": self.tabla.cellWidget(i, 2).value(), 
+                    "um": self.tabla.item(i, 3).text(),              
                     "precio_unitario": self.tabla.cellWidget(i, 4).value(),
                     "monto": float(self.tabla.item(i, 5).text())
                 }
@@ -658,14 +658,51 @@ class DialogoOrdenCompra(QDialog):
                 cursor.execute("INSERT INTO ordenes_compra_detalle (id, orden_id, codigo_producto, descripcion, cantidad, um, precio_unitario, monto) VALUES (?,?,?,?,?,?,?,?)",
                                (id_det, det["orden_id"], det["codigo_producto"], det["descripcion"], det["cantidad"], det["um"], det["precio_unitario"], det["monto"]))
 
+                # 🌟 INICIO DEL MERGE: GENERACIÓN DE HISTORIAL Y SUMA A INVENTARIO 🌟
+                # Solo aplicamos el historial y suma de inventario si es una OC Nueva
+                if not self.orden_id:
+                    datos_historial = {
+                        "codigo_producto": det["codigo_producto"],
+                        "proveedor_id": encabezado["proveedor_id"],
+                        "proveedor_nombre": self.proveedor_seleccionado[1],
+                        "precio_compra": det["precio_unitario"],
+                        "cantidad": det["cantidad"],
+                        "fecha": encabezado["fecha"],
+                        "monto_total": det["monto"],
+                        "usuario": encabezado["representante"] # Usa al admin seleccionado en la OC
+                    }
+                    
+                    # Guardamos el historial en la Nube
+                    exito_h, id_hist = operacion_crud_nube('historial_compras', 'INSERT', datos_historial)
+                    if not exito_h: raise Exception(f"Fallo al guardar historial en la nube: {id_hist}")
+                    
+                    # Guardamos el historial Localmente
+                    cursor.execute("""
+                        INSERT INTO historial_compras 
+                        (id, codigo_producto, proveedor_id, proveedor_nombre, precio_compra, cantidad, fecha, monto_total, usuario) 
+                        VALUES (?,?,?,?,?,?,?,?,?)
+                    """, (id_hist, datos_historial["codigo_producto"], datos_historial["proveedor_id"], datos_historial["proveedor_nombre"], 
+                          datos_historial["precio_compra"], datos_historial["cantidad"], datos_historial["fecha"], 
+                          datos_historial["monto_total"], datos_historial["usuario"]))
+                    
+                    # Si la fecha de la OC es HOY, sumamos al stock del inventario
+                    if datos_historial["fecha"] == QDate.currentDate().toString("yyyy-MM-dd"):
+                        prod = cursor.execute("SELECT id, stock FROM inventario WHERE codigo_producto=?", (det["codigo_producto"],)).fetchone()
+                        if prod:
+                            nuevo_stock = prod[1] + det["cantidad"]
+                            exito_s, msj_s = operacion_crud_nube('inventario', 'UPDATE', {"stock": nuevo_stock}, prod[0])
+                            if exito_s:
+                                cursor.execute("UPDATE inventario SET stock=? WHERE id=?", (nuevo_stock, prod[0]))
+                # 🌟 FIN DEL MERGE 🌟
+
             conn.commit()
-            QMessageBox.information(self, "Éxito", "Orden de Compra guardada correctamente en la nube.")
+            QMessageBox.information(self, "Éxito", "Orden de Compra, Historial e Inventario actualizados correctamente en la nube.")
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Fallo al guardar:\n{str(e)}")
         finally:
             conn.close()
-
+            
     def cargar_orden_existente(self):
         conn = obtener_conexion()
         cursor = conn.cursor()
