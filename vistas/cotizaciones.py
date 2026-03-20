@@ -178,48 +178,58 @@ class DialogoCotizacion(QDialog):
             self.cargar_cotizacion_existente()
         else:
             self.generar_folio()
+
     def eventFilter(self, obj, event):
-    # Manejar eventos de teclado en los spinboxes de cantidad
+        # Verificar que la tabla ya existe antes de usarla
+        if not hasattr(self, 'tabla_prod'):
+            return super().eventFilter(obj, event)
+
+        # Manejar eventos de teclado en los spinboxes de cantidad
         if event.type() == event.Type.KeyPress and isinstance(obj, SpinBoxSinRueda):
             key = event.key()
             if key in (Qt.Key_Up, Qt.Key_Down):
-                # Encontrar la fila a la que pertenece este spinbox
+                columna_cantidad = 3  # Columna "Cantidad" en cotizaciones
                 for fila in range(self.tabla_prod.rowCount()):
-                    if self.tabla_prod.cellWidget(fila, 3) == obj:
+                    if self.tabla_prod.cellWidget(fila, columna_cantidad) == obj:
                         current_row = fila
                         break
                 else:
                     return super().eventFilter(obj, event)
 
                 if key == Qt.Key_Up and current_row > 0:
-                    nuevo_spin = self.tabla_prod.cellWidget(current_row - 1, 3)
+                    nuevo_spin = self.tabla_prod.cellWidget(current_row - 1, columna_cantidad)
                     if nuevo_spin:
-                        self.tabla_prod.setCurrentCell(current_row - 1, 3)
+                        self.tabla_prod.setCurrentCell(current_row - 1, columna_cantidad)
                         nuevo_spin.setFocus()
+                        nuevo_spin.selectAll()
                         return True
                 elif key == Qt.Key_Down and current_row < self.tabla_prod.rowCount() - 1:
-                    nuevo_spin = self.tabla_prod.cellWidget(current_row + 1, 3)
+                    nuevo_spin = self.tabla_prod.cellWidget(current_row + 1, columna_cantidad)
                     if nuevo_spin:
-                        self.tabla_prod.setCurrentCell(current_row + 1, 3)
+                        self.tabla_prod.setCurrentCell(current_row + 1, columna_cantidad)
                         nuevo_spin.setFocus()
+                        nuevo_spin.selectAll()
                         return True
 
-        # Manejar eventos de teclado en la tabla (para navegación general)
+        # Manejar eventos de teclado en la tabla
         elif obj == self.tabla_prod and event.type() == event.Type.KeyPress:
             key = event.key()
             if key in (Qt.Key_Up, Qt.Key_Down):
+                columna_cantidad = 3
                 current_row = self.tabla_prod.currentRow()
                 if key == Qt.Key_Up and current_row > 0:
-                    self.tabla_prod.setCurrentCell(current_row - 1, 3)
-                    spin = self.tabla_prod.cellWidget(current_row - 1, 3)
+                    self.tabla_prod.setCurrentCell(current_row - 1, columna_cantidad)
+                    spin = self.tabla_prod.cellWidget(current_row - 1, columna_cantidad)
                     if spin:
                         spin.setFocus()
+                        spin.selectAll()
                     return True
                 elif key == Qt.Key_Down and current_row < self.tabla_prod.rowCount() - 1:
-                    self.tabla_prod.setCurrentCell(current_row + 1, 3)
-                    spin = self.tabla_prod.cellWidget(current_row + 1, 3)
+                    self.tabla_prod.setCurrentCell(current_row + 1, columna_cantidad)
+                    spin = self.tabla_prod.cellWidget(current_row + 1, columna_cantidad)
                     if spin:
                         spin.setFocus()
+                        spin.selectAll()
                     return True
 
         return super().eventFilter(obj, event)
@@ -251,6 +261,7 @@ class DialogoCotizacion(QDialog):
         layout_buscador_cliente.addWidget(self.input_buscar_cliente)
 
         btn_buscar_cliente = QPushButton("Buscar")
+        btn_buscar_cliente.setAutoDefault(False)
         btn_buscar_cliente.setObjectName("botonAgregar")
         btn_buscar_cliente.setMinimumHeight(42)
         btn_buscar_cliente.clicked.connect(self.buscar_cliente)
@@ -311,9 +322,11 @@ class DialogoCotizacion(QDialog):
         layout_buscador.addWidget(self.input_buscar_prod)
 
         btn_agregar_prod = QPushButton("Buscar / Agregar")
+
         btn_agregar_prod.setObjectName("botonAgregar")
         btn_agregar_prod.setMinimumHeight(45)
         btn_agregar_prod.setMinimumWidth(180)
+        btn_agregar_prod.setAutoDefault(False)
         btn_agregar_prod.clicked.connect(self.buscar_y_agregar_producto)
         layout_buscador.addWidget(btn_agregar_prod)
         layout.addLayout(layout_buscador)
@@ -382,6 +395,7 @@ class DialogoCotizacion(QDialog):
         self.btn_guardar.setObjectName("botonPrincipal")
         self.btn_guardar.setMinimumHeight(55) 
         self.btn_guardar.setMinimumWidth(250)
+        self.btn_guardar.setAutoDefault(False)
         self.btn_guardar.clicked.connect(self.guardar_cotizacion)
         
         layout_totales.addSpacing(40)
@@ -506,6 +520,7 @@ class DialogoCotizacion(QDialog):
         self.tabla_prod.setCellWidget(fila, 3, spin_cantidad) 
 
         btn_quitar = QPushButton("❌ Quitar")
+        btn_quitar.setAutoDefault(False)
         btn_quitar.setObjectName("botonEliminar")
         btn_quitar.setMinimumHeight(35)
         btn_quitar.clicked.connect(lambda checked, f=fila: self.eliminar_fila(f))
