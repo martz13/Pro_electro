@@ -96,7 +96,11 @@ class DialogoSeleccionarProducto(QDialog):
         self.tabla.setRowCount(len(resultados))
         for fila, prod in enumerate(resultados):
             self.tabla.setItem(fila, 0, QTableWidgetItem(str(prod[0])))
-            self.tabla.setItem(fila, 1, QTableWidgetItem(str(prod[1])))
+            
+            # --- MODIFICACIÓN: Agregar ToolTip ---
+            item_desc = QTableWidgetItem(str(prod[1]))
+            item_desc.setToolTip(str(prod[1])) 
+            self.tabla.setItem(fila, 1, item_desc)
 
         btn_seleccionar = QPushButton("Seleccionar Producto")
         btn_seleccionar.setObjectName("botonPrincipal")
@@ -255,14 +259,13 @@ class DialogoOrdenCompra(QDialog):
         self.input_buscar_prod = QLineEdit()
         self.input_buscar_prod.setPlaceholderText("🔍 Buscar producto por Código o Descripción...")
         self.input_buscar_prod.setMinimumHeight(45)
-        # 🌟 ELIMINAMOS la línea 'returnPressed' para desactivar el Enter
-        def bloquear_enter(event):
+        def presionar_enter_buscar(event):
             if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
-                pass # El Enter muere aquí, no hace absolutamente nada
+                self.buscar_producto_txt() # Llama directamente a la función
             else:
                 QLineEdit.keyPressEvent(self.input_buscar_prod, event)
         
-        self.input_buscar_prod.keyPressEvent = bloquear_enter
+        self.input_buscar_prod.keyPressEvent = presionar_enter_buscar
         
         self.combo_productos_prov = QComboBox()
         self.combo_productos_prov.setMinimumHeight(45)
@@ -363,53 +366,57 @@ class DialogoOrdenCompra(QDialog):
         if not hasattr(self, 'tabla'):
             return super().eventFilter(obj, event)
 
-        # Manejar eventos de teclado en los spinboxes de cantidad
-        if event.type() == event.Type.KeyPress and isinstance(obj, SpinBoxSinRueda):
+        # Manejar eventos de teclado en los spinboxes de CANTIDAD y PRECIO
+        if event.type() == event.Type.KeyPress and (isinstance(obj, SpinBoxSinRueda) or isinstance(obj, DoubleSpinBoxSinRueda)):
             key = event.key()
             if key in (Qt.Key_Up, Qt.Key_Down):
-                columna_cantidad = 2  # Columna "Cantidad" en órdenes de compra
+                # Determinar automáticamente en qué columna estamos
+                columna_actual = 2 if isinstance(obj, SpinBoxSinRueda) else 4  
+                
                 for fila in range(self.tabla.rowCount()):
-                    if self.tabla.cellWidget(fila, columna_cantidad) == obj:
+                    if self.tabla.cellWidget(fila, columna_actual) == obj:
                         current_row = fila
                         break
                 else:
                     return super().eventFilter(obj, event)
 
                 if key == Qt.Key_Up and current_row > 0:
-                    nuevo_spin = self.tabla.cellWidget(current_row - 1, columna_cantidad)
+                    nuevo_spin = self.tabla.cellWidget(current_row - 1, columna_actual)
                     if nuevo_spin:
-                        self.tabla.setCurrentCell(current_row - 1, columna_cantidad)
+                        self.tabla.setCurrentCell(current_row - 1, columna_actual)
                         nuevo_spin.setFocus()
                         nuevo_spin.selectAll()
                         return True
                 elif key == Qt.Key_Down and current_row < self.tabla.rowCount() - 1:
-                    nuevo_spin = self.tabla.cellWidget(current_row + 1, columna_cantidad)
+                    nuevo_spin = self.tabla.cellWidget(current_row + 1, columna_actual)
                     if nuevo_spin:
-                        self.tabla.setCurrentCell(current_row + 1, columna_cantidad)
+                        self.tabla.setCurrentCell(current_row + 1, columna_actual)
                         nuevo_spin.setFocus()
                         nuevo_spin.selectAll()
                         return True
 
-        # Manejar eventos de teclado en la tabla
+        # Manejar eventos de teclado si la celda de la tabla tiene el foco directamente
         elif obj == self.tabla and event.type() == event.Type.KeyPress:
             key = event.key()
             if key in (Qt.Key_Up, Qt.Key_Down):
-                columna_cantidad = 2
-                current_row = self.tabla.currentRow()
-                if key == Qt.Key_Up and current_row > 0:
-                    self.tabla.setCurrentCell(current_row - 1, columna_cantidad)
-                    spin = self.tabla.cellWidget(current_row - 1, columna_cantidad)
-                    if spin:
-                        spin.setFocus()
-                        spin.selectAll()
-                    return True
-                elif key == Qt.Key_Down and current_row < self.tabla.rowCount() - 1:
-                    self.tabla.setCurrentCell(current_row + 1, columna_cantidad)
-                    spin = self.tabla.cellWidget(current_row + 1, columna_cantidad)
-                    if spin:
-                        spin.setFocus()
-                        spin.selectAll()
-                    return True
+                current_col = self.tabla.currentColumn()
+                # Permitir navegar si estamos en col 2 (Cantidad) o 4 (Precio)
+                if current_col in (2, 4):
+                    current_row = self.tabla.currentRow()
+                    if key == Qt.Key_Up and current_row > 0:
+                        self.tabla.setCurrentCell(current_row - 1, current_col)
+                        spin = self.tabla.cellWidget(current_row - 1, current_col)
+                        if spin:
+                            spin.setFocus()
+                            spin.selectAll()
+                        return True
+                    elif key == Qt.Key_Down and current_row < self.tabla.rowCount() - 1:
+                        self.tabla.setCurrentCell(current_row + 1, current_col)
+                        spin = self.tabla.cellWidget(current_row + 1, current_col)
+                        if spin:
+                            spin.setFocus()
+                            spin.selectAll()
+                        return True
 
         return super().eventFilter(obj, event)
 
@@ -538,14 +545,17 @@ class DialogoOrdenCompra(QDialog):
         spin_cant.setFocus()
 
         # DoubleSpinBox editable para Precio Unitario (Columna 4)
-        spin_precio = QDoubleSpinBox()
-        spin_precio.setLocale(QLocale(QLocale.English, QLocale.UnitedStates)) # 🌟 FUERZA EL USO DE PUNTO (.) DECIMAL
+        # DoubleSpinBox editable para Precio Unitario (Columna 4)
+        # --- MODIFICACIÓN: Usar nueva clase y conectar event filter ---
+        spin_precio = DoubleSpinBoxSinRueda() 
+        spin_precio.setLocale(QLocale(QLocale.English, QLocale.UnitedStates)) # FUERZA EL USO DE PUNTO (.) DECIMAL
         spin_precio.setMinimumHeight(40)
         spin_precio.setStyleSheet("font-size: 15px;")
         spin_precio.setRange(0.0, 9999999.99)
         spin_precio.setValue(float(precio))
         spin_precio.setDecimals(2)
         spin_precio.valueChanged.connect(self.calcular_totales)
+        spin_precio.installEventFilter(self) # Activa la navegación con flechas
         self.tabla.setCellWidget(fila, 4, spin_precio)
 
         # Botón Quitar (Columna 6)
@@ -750,6 +760,19 @@ class DialogoOrdenCompra(QDialog):
         conn.close()
 
 class SpinBoxSinRueda(QSpinBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Up, Qt.Key_Down):
+            event.ignore()
+        else:
+            super().keyPressEvent(event)
+
+class DoubleSpinBoxSinRueda(QDoubleSpinBox):
     def __init__(self, parent=None):
         super().__init__(parent)
 

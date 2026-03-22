@@ -1038,7 +1038,7 @@ class VistaInventario(QWidget):
         btn_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         btn_del.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         
-
+        lay.addWidget(btn_edit)
         # Botón Historial (solo Super admin)
         if self.rol == "Super admin":
             btn_hist = QPushButton("📜 Historial")
@@ -1052,7 +1052,7 @@ class VistaInventario(QWidget):
             btn_hist.clicked.connect(lambda _, c=prod[1], d=prod[2]: self.abrir_historial(c, d))
             lay.addWidget(btn_hist)
 
-        lay.addWidget(btn_edit)
+        
         lay.addWidget(btn_del)
 
         return widget

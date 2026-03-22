@@ -162,8 +162,10 @@ class DialogoCliente(QDialog):
 
 
 class VistaClientes(QWidget):
-    def __init__(self):
+    def __init__(self, rol="Super admin", usuario_actual=""):
         super().__init__()
+        self.rol = rol
+        self.usuario_actual = usuario_actual
         self.setMinimumWidth(1200)
         
         layout = QVBoxLayout(self)
@@ -238,7 +240,14 @@ class VistaClientes(QWidget):
             }
         """)
         
-        self.tabla.cellDoubleClicked.connect(self.on_cell_double_clicked)
+        if self.rol == "Vendedor":
+            self.tabla.setColumnHidden(7, True)  # Oculta la columna Teléfono
+            self.tabla.setColumnHidden(8, True)  # Oculta la columna Correo
+            self.tabla.setColumnHidden(12, True) # Oculta la columna Acciones (Botones Editar/Eliminar)
+        else:
+            # Solo los Super admin pueden editar al hacer doble clic
+            self.tabla.cellDoubleClicked.connect(self.on_cell_double_clicked)
+            
         layout.addWidget(self.tabla)
 
         self.cargar_datos()

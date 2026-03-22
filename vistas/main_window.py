@@ -106,7 +106,7 @@ class MainWindow(QMainWindow):
         self.vista_usuarios = VistaUsuarios()
         self.contenedor_vistas.addWidget(self.vista_usuarios)
         
-        self.vista_clientes = VistaClientes()
+        self.vista_clientes = VistaClientes(self.rol, self.nombre_usuario)
         self.contenedor_vistas.addWidget(self.vista_clientes)
         
         self.vista_proveedores = VistaProveedores()
