@@ -90,7 +90,33 @@ def inicializar_bd():
     else:
         print(f"Advertencia: No se encontró el archivo {RUTA_SQL_ORIGINAL}.")
 
-    # 2. Insertar usuario de prueba (si no existe previamente)
+    # 2. MIGRACIONES - Agregar columnas nuevas a tablas existentes (protege la BD de Edwin)
+    # Si la columna ya existe, SQLite lanza error que ignoramos con try/except
+    migraciones = [
+        ("inventario", "clave_sat_producto", "TEXT"),
+        ("catalogo_um", "clave_sat_unidad", "TEXT"),
+        ("datos_fiscales", "facturacion_todos_usuarios", "INTEGER DEFAULT 0"),
+        ("datos_fiscales", "regimen_fiscal", "TEXT"),
+        ("datos_fiscales", "cp_fiscal", "TEXT"),
+        # Campos fiscales del timbre para PDF personalizado y QR
+        ("facturas", "cert_numero", "TEXT"),
+        ("facturas", "sello_cfdi", "TEXT"),
+        ("facturas", "sello_sat", "TEXT"),
+        ("facturas", "cert_sat_numero", "TEXT"),
+        ("facturas", "rfc_pac", "TEXT"),
+        ("facturas", "cadena_original", "TEXT"),
+        ("facturas", "forma_pago", "TEXT"),
+        ("facturas", "metodo_pago", "TEXT"),
+    ]
+    
+    for tabla, columna, tipo in migraciones:
+        try:
+            cursor.execute(f"ALTER TABLE {tabla} ADD COLUMN {columna} {tipo}")
+            print(f"✅ Migración aplicada: {tabla}.{columna}")
+        except sqlite3.OperationalError:
+            pass  # La columna ya existe, no pasa nada
+
+    # 3. Insertar usuario de prueba (si no existe previamente)
     cursor.execute("SELECT id FROM usuarios WHERE correo = ?", ("admin@proelectro.mx",))
     usuario_existente = cursor.fetchone()
     
@@ -186,8 +212,9 @@ def sincronizar_datos_nube(progress_callback=None):
             emit(60, "Limpiando registros locales antiguos...")
             cursor.execute("PRAGMA foreign_keys = OFF;")
             
+            cursor.execute("DELETE FROM facturas")
             cursor.execute("DELETE FROM historial_compras")
-            cursor.execute("DELETE FROM ordenes_compra_detalle") # <-- NUEVO
+            cursor.execute("DELETE FROM ordenes_compra_detalle")
             cursor.execute("DELETE FROM ordenes_compra")
             cursor.execute("DELETE FROM cotizaciones_detalle")
             cursor.execute("DELETE FROM cotizaciones")
@@ -207,7 +234,7 @@ def sincronizar_datos_nube(progress_callback=None):
                 cursor.executemany(query, valores)
             
             # Insertar en orden lógico
-            tablas = ["usuarios", "clientes", "proveedores", "inventario", "historial_compras", "cotizaciones", "cotizaciones_detalle", "ordenes_compra", "ordenes_compra_detalle", "catalogo_um","datos_fiscales"]
+            tablas = ["usuarios", "clientes", "proveedores", "inventario", "historial_compras", "cotizaciones", "cotizaciones_detalle", "ordenes_compra", "ordenes_compra_detalle", "catalogo_um", "datos_fiscales", "facturas"]
             for i, t in enumerate(tablas):
                 progreso = 60 + int(((i+1)/len(tablas)) * 35) # Matemática de 60% a 95%
                 emit(progreso, f"Instalando tabla: {t}...")

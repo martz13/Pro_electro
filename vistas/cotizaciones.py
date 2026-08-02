@@ -2,10 +2,12 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QTableWidget, QTableWidgetItem, 
                                QAbstractItemView, QHeaderView, QDialog, QMessageBox, 
                                QGridLayout, QComboBox, QDateEdit, QDoubleSpinBox, QGroupBox,
-                               QScrollArea, QFrame, QSizePolicy, QSpinBox, QApplication)
+                               QScrollArea, QFrame, QSizePolicy, QSpinBox, QApplication,
+                               QInputDialog, QFileDialog)
 from PySide6.QtCore import Qt, QDate, Signal
 from PySide6.QtGui import QColor
 import requests
+import os
 
 # --- NUEVAS IMPORTACIONES ONLINE-FIRST ---
 from base_datos.conexion import obtener_conexion, operacion_crud_nube, forzar_descarga_nube
@@ -713,6 +715,12 @@ class DialogoCotizacion(QDialog):
                 conexion.commit()
                 QMessageBox.information(self, "Éxito", "Cotización guardada e inventario actualizado correctamente.")
 
+                # ==========================================
+                # FLUJO DE FACTURACIÓN - Preguntar si desea facturar
+                # ==========================================
+                if estado == 'Aceptada' and estado_anterior != 'Aceptada':
+                    self._preguntar_facturacion(id_cotizacion_actual)
+
             else:
                 # --- FLUJO OFFLINE (TABLAS EXT) ---
                 cursor.execute("SELECT MAX(id_cotizacion) FROM cotizaciones_ext")
@@ -749,6 +757,32 @@ class DialogoCotizacion(QDialog):
             QMessageBox.critical(self, "Error", f"Fallo al guardar:\n{str(e)}")
         finally:
             conexion.close()
+
+    def _preguntar_facturacion(self, cotizacion_id):
+        """Pregunta al usuario si desea facturar la cotización aceptada"""
+        from utilidades.facturacion import (validar_datos_facturacion, timbrar_cfdi,
+                                            FORMAS_PAGO, METODOS_PAGO, USOS_CFDI)
+        
+        # Preguntar si desea facturar
+        respuesta = QMessageBox.question(self, "Facturación Electrónica",
+            "La cotización ha sido marcada como Aceptada.\n\n¿Deseas generar la factura electrónica (CFDI)?",
+            QMessageBox.Yes | QMessageBox.No)
+
+        if respuesta == QMessageBox.No:
+            return
+
+        # Validar datos antes de mostrar el formulario
+        valido, errores = validar_datos_facturacion(cotizacion_id)
+        if not valido:
+            msg_errores = "\n".join(errores)
+            QMessageBox.warning(self, "No se puede facturar",
+                f"Faltan datos obligatorios para facturar:\n\n{msg_errores}\n\n"
+                "Corrige estos datos e intenta facturar desde el historial de facturas.")
+            return
+
+        # Mostrar mini-formulario de facturación
+        dialogo = DialogoFacturar(self, cotizacion_id)
+        dialogo.exec()
 
     def cargar_cotizacion_existente(self):
         conexion = obtener_conexion()
@@ -803,6 +837,425 @@ class DialogoCotizacion(QDialog):
 
 
 # ==========================================
+# DIÁLOGO PARA FACTURAR (Mini-formulario)
+# ==========================================
+class DialogoFacturar(QDialog):
+    """Mini-formulario que aparece al aceptar una cotización para facturar"""
+    def __init__(self, parent=None, cotizacion_id=None):
+        super().__init__(parent)
+        self.cotizacion_id = cotizacion_id
+        self.setWindowTitle("Generar Factura Electrónica (CFDI 4.0)")
+        self.setFixedSize(500, 320)
+        self.setModal(True)
+
+        from utilidades.facturacion import FORMAS_PAGO, METODOS_PAGO, USOS_CFDI
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(30, 25, 30, 25)
+        layout.setSpacing(15)
+
+        lbl_titulo = QLabel("📄 Confirmar datos de facturación")
+        lbl_titulo.setStyleSheet("font-size: 16px; font-weight: bold; color: #2c3e50;")
+        layout.addWidget(lbl_titulo)
+
+        # Obtener uso CFDI del cliente
+        conn = obtener_conexion()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT c.cfdi FROM cotizaciones cot
+            JOIN clientes c ON cot.cliente_id = c.id_cliente
+            WHERE cot.id_cotizacion = ?
+        """, (cotizacion_id,))
+        row = cursor.fetchone()
+        cfdi_cliente = row[0] if row else "G03"
+        conn.close()
+
+        grid = QGridLayout()
+        grid.setVerticalSpacing(12)
+
+        # Uso de CFDI
+        grid.addWidget(QLabel("Uso de CFDI:"), 0, 0)
+        self.combo_uso_cfdi = QComboBox()
+        self.combo_uso_cfdi.setMinimumHeight(35)
+        for codigo, desc in USOS_CFDI:
+            self.combo_uso_cfdi.addItem(f"{codigo} - {desc}", codigo)
+        # Pre-seleccionar el del cliente
+        idx = self.combo_uso_cfdi.findData(cfdi_cliente)
+        if idx >= 0:
+            self.combo_uso_cfdi.setCurrentIndex(idx)
+        grid.addWidget(self.combo_uso_cfdi, 0, 1)
+
+        # Forma de pago
+        grid.addWidget(QLabel("Forma de pago:"), 1, 0)
+        self.combo_forma_pago = QComboBox()
+        self.combo_forma_pago.setMinimumHeight(35)
+        for codigo, desc in FORMAS_PAGO:
+            self.combo_forma_pago.addItem(f"{codigo} - {desc}", codigo)
+        # Default: Transferencia (03)
+        idx_fp = self.combo_forma_pago.findData("03")
+        if idx_fp >= 0:
+            self.combo_forma_pago.setCurrentIndex(idx_fp)
+        grid.addWidget(self.combo_forma_pago, 1, 1)
+
+        # Método de pago
+        grid.addWidget(QLabel("Método de pago:"), 2, 0)
+        self.combo_metodo_pago = QComboBox()
+        self.combo_metodo_pago.setMinimumHeight(35)
+        for codigo, desc in METODOS_PAGO:
+            self.combo_metodo_pago.addItem(f"{codigo} - {desc}", codigo)
+        grid.addWidget(self.combo_metodo_pago, 2, 1)
+
+        layout.addLayout(grid)
+        layout.addStretch()
+
+        # Botones
+        btn_layout = QHBoxLayout()
+        btn_cancelar = QPushButton("Cancelar")
+        btn_cancelar.setMinimumHeight(42)
+        btn_cancelar.clicked.connect(self.reject)
+
+        self.btn_facturar = QPushButton("⚡ Facturar")
+        self.btn_facturar.setMinimumHeight(42)
+        self.btn_facturar.setStyleSheet("background-color: #38A169; color: white; font-weight: bold; font-size: 14px; border-radius: 5px;")
+        self.btn_facturar.clicked.connect(self.ejecutar_facturacion)
+
+        btn_layout.addWidget(btn_cancelar)
+        btn_layout.addWidget(self.btn_facturar)
+        layout.addLayout(btn_layout)
+
+    def ejecutar_facturacion(self):
+        """Ejecuta el timbrado del CFDI"""
+        from utilidades.facturacion import timbrar_cfdi
+        from utilidades.generador_pdf_factura import generar_pdf_factura
+
+        self.btn_facturar.setText("Procesando...")
+        self.btn_facturar.setEnabled(False)
+        QApplication.processEvents()
+
+        forma_pago = self.combo_forma_pago.currentData()
+        metodo_pago = self.combo_metodo_pago.currentData()
+        uso_cfdi = self.combo_uso_cfdi.currentData()
+
+        # Timbrar
+        exito, resultado = timbrar_cfdi(self.cotizacion_id, forma_pago, metodo_pago, uso_cfdi)
+
+        if exito:
+            cfdi_id         = resultado["cfdi_id"]
+            uuid            = resultado["uuid"]
+            fecha           = resultado.get("fecha", "")
+            cert_numero     = resultado.get("cert_numero", "")
+            sello_cfdi      = resultado.get("sello_cfdi", "")
+            sello_sat       = resultado.get("sello_sat", "")
+            cert_sat_numero = resultado.get("cert_sat_numero", "")
+            rfc_pac         = resultado.get("rfc_pac", "")
+            cadena_original = resultado.get("cadena_original", "")
+
+            # Obtener datos de la cotización
+            conn = obtener_conexion()
+            cursor = conn.cursor()
+            cursor.execute("SELECT cliente_id, monto_total, folio FROM cotizaciones WHERE id_cotizacion=?", (self.cotizacion_id,))
+            cot_row = cursor.fetchone()
+            cliente_id = cot_row[0]
+            monto      = cot_row[1]
+            folio_cot  = cot_row[2]
+
+            fecha_timbrado = fecha or datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+            # Guardar en tabla facturas (nube + local) con todos los campos fiscales
+            from base_datos.conexion import operacion_crud_nube
+            from datetime import datetime
+            datos_factura = {
+                "cfdi_id":         cfdi_id,
+                "uuid":            uuid,
+                "folio_fiscal":    folio_cot,
+                "cotizacion_id":   self.cotizacion_id,
+                "cliente_id":      cliente_id,
+                "fecha_timbrado":  fecha_timbrado,
+                "monto_total":     monto,
+                "estado":          "Activa",
+                "cert_numero":     cert_numero,
+                "sello_cfdi":      sello_cfdi,
+                "sello_sat":       sello_sat,
+                "cert_sat_numero": cert_sat_numero,
+                "rfc_pac":         rfc_pac,
+                "cadena_original": cadena_original,
+                "forma_pago":      forma_pago,
+                "metodo_pago":     metodo_pago,
+            }
+            exito_nube, id_factura = operacion_crud_nube('facturas', 'INSERT', datos_factura)
+            if exito_nube:
+                cursor.execute("""
+                    INSERT INTO facturas (
+                        id, cfdi_id, uuid, folio_fiscal, cotizacion_id, cliente_id,
+                        fecha_timbrado, monto_total, estado,
+                        cert_numero, sello_cfdi, sello_sat, cert_sat_numero,
+                        rfc_pac, cadena_original, forma_pago, metodo_pago
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    id_factura, cfdi_id, uuid, folio_cot, self.cotizacion_id, cliente_id,
+                    fecha_timbrado, monto, "Activa",
+                    cert_numero, sello_cfdi, sello_sat, cert_sat_numero,
+                    rfc_pac, cadena_original, forma_pago, metodo_pago
+                ))
+                conn.commit()
+
+            conn.close()
+
+            QMessageBox.information(self, "¡Factura Generada!",
+                f"✅ CFDI timbrado exitosamente.\n\n"
+                f"UUID: {uuid}\n"
+                f"Folio: {folio_cot}\n\n"
+                "La factura se guardó en el historial.")
+            self.accept()
+        else:
+            self.btn_facturar.setText("⚡ Facturar")
+            self.btn_facturar.setEnabled(True)
+            QMessageBox.critical(self, "Error al facturar",
+                f"No se pudo generar el CFDI:\n\n{resultado}")
+
+
+# ==========================================
+# DIÁLOGO HISTORIAL DE FACTURAS
+# ==========================================
+class DialogoHistorialFacturas(QDialog):
+    """Modal que muestra el historial de facturas emitidas"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("📄 Historial de Facturas Emitidas")
+        self.setMinimumSize(900, 550)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(12)
+
+        # Header
+        header = QHBoxLayout()
+        lbl_titulo = QLabel("Facturas Emitidas (CFDI 4.0)")
+        lbl_titulo.setStyleSheet("font-size: 18px; font-weight: bold; color: #2c3e50;")
+        header.addWidget(lbl_titulo)
+        header.addStretch()
+
+        self.input_buscar = QLineEdit()
+        self.input_buscar.setPlaceholderText("🔍 Buscar por folio o cliente...")
+        self.input_buscar.setFixedWidth(250)
+        self.input_buscar.setMinimumHeight(35)
+        self.input_buscar.textChanged.connect(self.cargar_facturas)
+        header.addWidget(self.input_buscar)
+        layout.addLayout(header)
+
+        # Tabla
+        self.tabla = QTableWidget()
+        self.tabla.setColumnCount(7)
+        self.tabla.setHorizontalHeaderLabels(["ID", "Folio", "Fecha", "Cliente", "Monto", "Estado", "Acciones"])
+        self.tabla.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.tabla.setColumnWidth(0, 40)
+        self.tabla.setColumnWidth(1, 100)
+        self.tabla.setColumnWidth(2, 100)
+        self.tabla.setColumnWidth(4, 100)
+        self.tabla.setColumnWidth(5, 80)
+        self.tabla.setColumnWidth(6, 280)
+        self.tabla.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tabla.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tabla.verticalHeader().setVisible(False)
+        self.tabla.verticalHeader().setDefaultSectionSize(45)
+        self.tabla.setAlternatingRowColors(True)
+        layout.addWidget(self.tabla)
+
+        self.cargar_facturas()
+
+    def cargar_facturas(self):
+        """Carga las facturas desde la BD local"""
+        conn = obtener_conexion()
+        cursor = conn.cursor()
+        
+        texto = f"%{self.input_buscar.text().strip()}%"
+        cursor.execute("""
+            SELECT f.id, f.folio_fiscal, f.fecha_timbrado, c.nombre_completo, 
+                   f.monto_total, f.estado, f.cfdi_id, f.uuid
+            FROM facturas f
+            JOIN clientes c ON f.cliente_id = c.id_cliente
+            WHERE f.folio_fiscal LIKE ? OR c.nombre_completo LIKE ?
+            ORDER BY f.id DESC
+        """, (texto, texto))
+        facturas = cursor.fetchall()
+        conn.close()
+
+        self.tabla.setRowCount(len(facturas))
+
+        for fila, (fid, folio, fecha, cliente, monto, estado, cfdi_id, uuid) in enumerate(facturas):
+            self.tabla.setItem(fila, 0, QTableWidgetItem(str(fid)))
+            self.tabla.setItem(fila, 1, QTableWidgetItem(folio or ""))
+            self.tabla.setItem(fila, 2, QTableWidgetItem(fecha or ""))
+            self.tabla.setItem(fila, 3, QTableWidgetItem(cliente or ""))
+            self.tabla.setItem(fila, 4, QTableWidgetItem(f"${monto:,.2f}" if monto else ""))
+            
+            # Estado con color
+            item_estado = QTableWidgetItem(estado or "Activa")
+            if estado == "Cancelada":
+                item_estado.setForeground(QColor(220, 50, 50))
+            else:
+                item_estado.setForeground(QColor(56, 161, 105))
+            self.tabla.setItem(fila, 5, item_estado)
+
+            # Botones de acción
+            widget_acciones = QWidget()
+            lay = QHBoxLayout(widget_acciones)
+            lay.setContentsMargins(5, 3, 5, 3)
+            lay.setSpacing(5)
+
+            btn_ver = QPushButton("👁️ Ver")
+            btn_ver.setFixedSize(60, 30)
+            btn_ver.clicked.connect(lambda _, cid=cfdi_id, fol=folio, fid2=fid: self.ver_factura(cid, fol, fid2))
+            lay.addWidget(btn_ver)
+
+            btn_pdf = QPushButton("📥 PDF")
+            btn_pdf.setFixedSize(60, 30)
+            btn_pdf.clicked.connect(lambda _, fid2=fid, fol=folio: self.descargar_pdf_custom(fid2, fol))
+            lay.addWidget(btn_pdf)
+
+            btn_correo = QPushButton("📧")
+            btn_correo.setFixedSize(35, 30)
+            btn_correo.setToolTip("Enviar por correo")
+            btn_correo.clicked.connect(lambda _, cid=cfdi_id, fol=folio, fid2=fid: self.enviar_correo(cid, fol, fid2))
+            lay.addWidget(btn_correo)
+
+            if estado != "Cancelada":
+                btn_cancelar = QPushButton("❌")
+                btn_cancelar.setFixedSize(35, 30)
+                btn_cancelar.setToolTip("Cancelar factura")
+                btn_cancelar.clicked.connect(lambda _, cid=cfdi_id, uid=uuid, fid2=fid: self.cancelar_factura(cid, uid, fid2))
+                lay.addWidget(btn_cancelar)
+
+            self.tabla.setCellWidget(fila, 6, widget_acciones)
+
+    def ver_factura(self, cfdi_id, folio, factura_id):
+        """Abre el PDF de Facturama en el navegador"""
+        from utilidades.facturacion import abrir_pdf_en_navegador
+        exito, msg = abrir_pdf_en_navegador(cfdi_id)
+        if not exito:
+            QMessageBox.warning(self, "Error", f"No se pudo abrir la factura:\n{msg}")
+
+    def descargar_pdf_custom(self, factura_id, folio):
+        """Genera el PDF personalizado de Pro Electro"""
+        from utilidades.generador_pdf_factura import generar_pdf_factura
+        import subprocess, platform
+
+        ruta_guardado, _ = QFileDialog.getSaveFileName(
+            self, "Guardar Factura PDF", f"Factura_{folio}.pdf",
+            "Archivos PDF (*.pdf)")
+        
+        if not ruta_guardado:
+            return
+
+        exito, resultado = generar_pdf_factura(factura_id, ruta_destino=ruta_guardado)
+        if exito:
+            resp = QMessageBox.question(self, "PDF Generado",
+                f"Factura guardada en:\n{resultado}\n\n¿Deseas abrirla?",
+                QMessageBox.Yes | QMessageBox.No)
+            if resp == QMessageBox.Yes:
+                if platform.system() == 'Windows':
+                    os.startfile(resultado)
+                else:
+                    subprocess.run(['xdg-open', resultado])
+        else:
+            QMessageBox.warning(self, "Error", f"No se pudo generar el PDF:\n{resultado}")
+
+    def enviar_correo(self, cfdi_id, folio, factura_id):
+        """Envía la factura por correo SMTP"""
+        from utilidades.correo import enviar_factura_por_correo
+        from utilidades.generador_pdf_factura import generar_pdf_factura
+        from utilidades.facturacion import descargar_xml
+        import tempfile
+
+        # Obtener correo del cliente
+        conn = obtener_conexion()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT c.correo, c.nombre_completo FROM facturas f
+            JOIN clientes c ON f.cliente_id = c.id_cliente
+            WHERE f.id = ?
+        """, (factura_id,))
+        row = cursor.fetchone()
+        conn.close()
+
+        if not row or not row[0]:
+            QMessageBox.warning(self, "Sin correo", "El cliente no tiene correo electrónico registrado.")
+            return
+
+        correo_cliente, nombre_cliente = row
+
+        resp = QMessageBox.question(self, "Enviar factura",
+            f"¿Enviar la factura {folio} al correo:\n{correo_cliente}?",
+            QMessageBox.Yes | QMessageBox.No)
+
+        if resp == QMessageBox.No:
+            return
+
+        # Generar PDF personalizado
+        ruta_pdf_temp = os.path.join(tempfile.gettempdir(), f"Factura_{folio}.pdf")
+        exito_pdf, ruta_pdf = generar_pdf_factura(factura_id, ruta_destino=ruta_pdf_temp)
+
+        # Descargar XML
+        exito_xml, ruta_xml = descargar_xml(cfdi_id)
+
+        if exito_pdf:
+            exito_envio, msg_envio = enviar_factura_por_correo(
+                correo_cliente, nombre_cliente, folio,
+                ruta_pdf, ruta_xml if exito_xml else None)
+
+            if exito_envio:
+                QMessageBox.information(self, "Enviado", msg_envio)
+            else:
+                QMessageBox.warning(self, "Error de envío", msg_envio)
+        else:
+            QMessageBox.warning(self, "Error", f"No se pudo generar el PDF para enviar:\n{ruta_pdf}")
+
+    def cancelar_factura(self, cfdi_id, uuid, factura_id):
+        """Cancela un CFDI"""
+        from utilidades.facturacion import cancelar_cfdi, MOTIVOS_CANCELACION
+
+        # Seleccionar motivo
+        motivos_texto = [f"{k} - {v}" for k, v in MOTIVOS_CANCELACION.items()]
+        motivo_sel, ok = QInputDialog.getItem(self, "Motivo de cancelación",
+            "Selecciona el motivo de cancelación ante el SAT:",
+            motivos_texto, 1, False)
+
+        if not ok:
+            return
+
+        motivo_codigo = motivo_sel.split(" - ")[0]
+
+        resp = QMessageBox.warning(self, "⚠️ Confirmar cancelación",
+            f"¿Estás seguro de cancelar esta factura?\n\n"
+            f"UUID: {uuid}\n"
+            f"Motivo: {motivo_sel}\n\n"
+            "Esta acción se reporta ante el SAT y puede ser irreversible.",
+            QMessageBox.Yes | QMessageBox.No)
+
+        if resp == QMessageBox.No:
+            return
+
+        exito, msg = cancelar_cfdi(cfdi_id, uuid, motivo_codigo)
+
+        if exito:
+            # Actualizar estado en BD
+            conn = obtener_conexion()
+            cursor = conn.cursor()
+            from base_datos.conexion import operacion_crud_nube
+            operacion_crud_nube('facturas', 'UPDATE',
+                {"estado": "Cancelada", "motivo_cancelacion": motivo_sel}, factura_id)
+            cursor.execute("UPDATE facturas SET estado='Cancelada', motivo_cancelacion=? WHERE id=?",
+                          (motivo_sel, factura_id))
+            conn.commit()
+            conn.close()
+            QMessageBox.information(self, "Cancelada", "La factura ha sido cancelada exitosamente.")
+            self.cargar_facturas()
+        else:
+            QMessageBox.critical(self, "Error", f"No se pudo cancelar:\n{msg}")
+
+
+# ==========================================
 # 2. VISTA PRINCIPAL (HISTORIAL)
 # ==========================================
 class VistaCotizaciones(QWidget):
@@ -844,6 +1297,16 @@ class VistaCotizaciones(QWidget):
         self.btn_crear.clicked.connect(self.crear_cotizacion)
 
         header_layout.addWidget(self.titulo)
+        header_layout.addSpacing(15)
+        
+        # Botón Facturas
+        self.btn_facturas = QPushButton("📄 Facturas")
+        self.btn_facturas.setStyleSheet("background-color: #2D3748; color: white; font-weight: bold; border-radius: 5px; padding: 8px 15px;")
+        self.btn_facturas.setMinimumHeight(40)
+        self.btn_facturas.setCursor(Qt.PointingHandCursor)
+        self.btn_facturas.clicked.connect(self.abrir_historial_facturas)
+        header_layout.addWidget(self.btn_facturas)
+        
         header_layout.addStretch()
         header_layout.addWidget(self.btn_externas)
         header_layout.addWidget(self.btn_subir_nube)
@@ -972,6 +1435,11 @@ class VistaCotizaciones(QWidget):
             layout_acciones.addStretch()
             
             self.tabla.setCellWidget(fila, 7, widget_acciones)
+
+    def abrir_historial_facturas(self):
+        """Abre el modal con el historial de facturas emitidas"""
+        dialogo = DialogoHistorialFacturas(self)
+        dialogo.exec()
 
     def toggle_vista_externas(self):
         self.viendo_externas = not self.viendo_externas

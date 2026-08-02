@@ -16,7 +16,7 @@ jobs:
       - name: Instalar Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
 
       - name: Instalar dependencias
         run: |
@@ -27,7 +27,7 @@ jobs:
       - name: Crear Ejecutable Principal (Pro Electro.exe)
         # Se genera un único ejecutable en modo ventana (sin consola)
         run: |
-          pyinstaller --onefile --windowed --name "Pro Electro" --icon=recursos/logo.ico --add-data "recursos;recursos" --add-data "base_datos/SQL.sql;base_datos" main.py
+          pyinstaller --onefile --windowed --name "Pro Electro" --icon=recursos/logo.ico --add-data "recursos;recursos" --add-data "base_datos/SQL.sql;base_datos" --hidden-import "qrcode" --hidden-import "qrcode.image.pil" --hidden-import "qrcode.image.base" --hidden-import "PIL" --hidden-import "PIL.Image" main.py
 
       - name: Preparar carpeta de entrega
         run: |

@@ -46,6 +46,18 @@ class VistaDatosFiscales(QWidget):
         self.input_representante = QLineEdit()
         grid.addWidget(self.input_representante, 2, 3)
 
+        # Fila 3: Régimen Fiscal y Código Postal Fiscal (para facturación CFDI 4.0)
+        grid.addWidget(QLabel("Régimen Fiscal:"), 3, 0)
+        self.input_regimen = QLineEdit()
+        self.input_regimen.setPlaceholderText("Ej: 601 (General de Ley)")
+        grid.addWidget(self.input_regimen, 3, 1)
+
+        grid.addWidget(QLabel("C.P. Fiscal:"), 3, 2)
+        self.input_cp_fiscal = QLineEdit()
+        self.input_cp_fiscal.setPlaceholderText("Ej: 64560")
+        self.input_cp_fiscal.setMaxLength(5)
+        grid.addWidget(self.input_cp_fiscal, 3, 3)
+
         layout_principal.addWidget(grupo_empresa)
         layout_principal.addSpacing(10)
 
@@ -89,7 +101,7 @@ class VistaDatosFiscales(QWidget):
         cursor = conexion.cursor()
         
         # Intentamos obtener el registro 1
-        cursor.execute("SELECT nombre_empresa, telefono, ubicacion, rfc, representante_legal, terminos_condiciones FROM datos_fiscales WHERE id = 1")
+        cursor.execute("SELECT nombre_empresa, telefono, ubicacion, rfc, representante_legal, terminos_condiciones, regimen_fiscal, cp_fiscal FROM datos_fiscales WHERE id = 1")
         datos = cursor.fetchone()
 
         if datos:
@@ -99,6 +111,8 @@ class VistaDatosFiscales(QWidget):
             self.input_rfc.setText(datos[3] if datos[3] else "")
             self.input_representante.setText(datos[4] if datos[4] else "")
             self.input_terminos.setPlainText(datos[5] if datos[5] else "")
+            self.input_regimen.setText(datos[6] if datos[6] else "")
+            self.input_cp_fiscal.setText(datos[7] if datos[7] else "")
         else:
             # Si por alguna razón la tabla está vacía, insertamos la fila por defecto
             try:
@@ -154,6 +168,8 @@ class VistaDatosFiscales(QWidget):
         rfc = self.input_rfc.text().strip()
         representante = self.input_representante.text().strip()
         terminos = self.input_terminos.toPlainText().strip()
+        regimen_fiscal = self.input_regimen.text().strip()
+        cp_fiscal = self.input_cp_fiscal.text().strip()
 
         datos_dict = {
             "nombre_empresa": nombre,
@@ -161,7 +177,9 @@ class VistaDatosFiscales(QWidget):
             "ubicacion": ubicacion,
             "rfc": rfc,
             "representante_legal": representante,
-            "terminos_condiciones": terminos
+            "terminos_condiciones": terminos,
+            "regimen_fiscal": regimen_fiscal,
+            "cp_fiscal": cp_fiscal
         }
 
         # --- REGLA 3: NUBE PRIMERO ---
@@ -183,9 +201,9 @@ class VistaDatosFiscales(QWidget):
         try:
             cursor.execute("""
                 UPDATE datos_fiscales 
-                SET nombre_empresa=?, telefono=?, ubicacion=?, rfc=?, representante_legal=?, terminos_condiciones=?
+                SET nombre_empresa=?, telefono=?, ubicacion=?, rfc=?, representante_legal=?, terminos_condiciones=?, regimen_fiscal=?, cp_fiscal=?
                 WHERE id=1
-            """, (nombre, telefono, ubicacion, rfc, representante, terminos))
+            """, (nombre, telefono, ubicacion, rfc, representante, terminos, regimen_fiscal, cp_fiscal))
             
             conexion.commit()
             QMessageBox.information(self, "Éxito", "Los datos fiscales se han guardado correctamente.")

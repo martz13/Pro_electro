@@ -1,10 +1,10 @@
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTableWidget, QTableWidgetItem, QAbstractItemView, QHeaderView,
-    QDialog, QMessageBox, QGridLayout, QComboBox, QListWidget, QListWidgetItem 
+    QDialog, QMessageBox, QGridLayout, QComboBox, QListWidget, QListWidgetItem,
+    QApplication, QCompleter, QDateEdit, QDoubleSpinBox, QSpinBox, QGroupBox, QFrame, QSizePolicy
 )
-from PySide6.QtCore import Qt, QDate,QLocale
-from PySide6.QtWidgets import QDateEdit, QDoubleSpinBox, QSpinBox, QGroupBox, QFrame,QSizePolicy
+from PySide6.QtCore import Qt, QDate, QLocale, QStringListModel
 import requests
 from base_datos.conexion import obtener_conexion,forzar_descarga_nube,operacion_crud_nube
 
@@ -16,7 +16,7 @@ class DialogoNuevaUM(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Nueva Unidad de Medida")
-        self.setFixedSize(380, 240)
+        self.setFixedSize(380, 310)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
@@ -37,6 +37,14 @@ class DialogoNuevaUM(QDialog):
         self.input_desc.setMinimumHeight(38)
         layout.addWidget(self.input_desc)
 
+        lbl_sat = QLabel("Clave SAT Unidad (ej. MTR, H87, E48):")
+        layout.addWidget(lbl_sat)
+
+        self.input_clave_sat = QLineEdit()
+        self.input_clave_sat.setMinimumHeight(38)
+        self.input_clave_sat.setPlaceholderText("Requerida para facturación CFDI 4.0")
+        layout.addWidget(self.input_clave_sat)
+
         layout.addStretch()
 
         btn = QPushButton("Guardar")
@@ -47,6 +55,7 @@ class DialogoNuevaUM(QDialog):
     def guardar(self):
         sigla = self.input_sigla.text().strip().upper()
         desc  = self.input_desc.text().strip()
+        clave_sat = self.input_clave_sat.text().strip().upper() or None
 
         if not sigla:
             QMessageBox.warning(self, "Requerido", "La sigla es obligatoria.")
@@ -75,7 +84,8 @@ class DialogoNuevaUM(QDialog):
         try:
             datos_dict = {
                 "sigla": sigla,
-                "descripcion": desc
+                "descripcion": desc,
+                "clave_sat_unidad": clave_sat
             }
 
             # --- REGLA 3: NUBE PRIMERO (Genera el ID) ---
@@ -84,7 +94,7 @@ class DialogoNuevaUM(QDialog):
 
             # --- LOCAL USANDO EL ID MAESTRO DE LA NUBE ---
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO catalogo_um (id, sigla, descripcion) VALUES (?, ?, ?)", (nuevo_id_nube, sigla, desc))
+            cursor.execute("INSERT INTO catalogo_um (id, sigla, descripcion, clave_sat_unidad) VALUES (?, ?, ?, ?)", (nuevo_id_nube, sigla, desc, clave_sat))
             
             conn.commit()
             self.accept()
@@ -96,6 +106,340 @@ class DialogoNuevaUM(QDialog):
         finally:
             conn.close()
 # ────────────────────────────────────────────────
+# Diálogo para buscar clave SAT con campo de búsqueda propio
+# ────────────────────────────────────────────────
+class DialogoBuscarClaveSAT(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Buscar Clave SAT del Producto")
+        self.setFixedSize(750, 500)
+        self.setModal(True)
+        self.clave_seleccionada = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(12)
+
+        lbl_info = QLabel("Escribe un término genérico para buscar la clave SAT:")
+        lbl_info.setStyleSheet("font-size: 14px; font-weight: bold; color: #2c3e50;")
+        layout.addWidget(lbl_info)
+
+        lbl_tip = QLabel("💡 Usa palabras simples: cable, interruptor, tubo, conector, motor, etc.")
+        lbl_tip.setStyleSheet("color: #718096; font-size: 11px; font-style: italic;")
+        layout.addWidget(lbl_tip)
+
+        # Campo de búsqueda
+        buscar_layout = QHBoxLayout()
+        self.input_busqueda = QLineEdit()
+        self.input_busqueda.setMinimumHeight(40)
+        self.input_busqueda.setPlaceholderText("Escribe aquí para buscar... (Ej: cable, interruptor, contacto)")
+        self.input_busqueda.returnPressed.connect(self.ejecutar_busqueda)
+        buscar_layout.addWidget(self.input_busqueda, stretch=1)
+
+        btn_buscar = QPushButton("🔍 Buscar")
+        btn_buscar.setMinimumHeight(40)
+        btn_buscar.setMinimumWidth(100)
+        btn_buscar.clicked.connect(self.ejecutar_busqueda)
+        buscar_layout.addWidget(btn_buscar)
+        layout.addLayout(buscar_layout)
+
+        # Tabla de resultados
+        self.tabla = QTableWidget()
+        self.tabla.setColumnCount(2)
+        self.tabla.setHorizontalHeaderLabels(["Clave", "Descripción"])
+        self.tabla.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.tabla.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tabla.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tabla.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tabla.setAlternatingRowColors(True)
+        self.tabla.setStyleSheet("""
+            QTableWidget { alternate-background-color: #F9FAFB; }
+            QTableWidget::item:selected { background-color: #3498db; color: white; }
+        """)
+        self.tabla.doubleClicked.connect(self.seleccionar)
+        layout.addWidget(self.tabla)
+
+        # Label de estado
+        self.lbl_estado = QLabel("")
+        self.lbl_estado.setStyleSheet("color: #718096;")
+        layout.addWidget(self.lbl_estado)
+
+        # Botón seleccionar
+        btn_seleccionar = QPushButton("✅ Seleccionar")
+        btn_seleccionar.setObjectName("botonPrincipal")
+        btn_seleccionar.setMinimumHeight(45)
+        btn_seleccionar.clicked.connect(self.seleccionar)
+        layout.addWidget(btn_seleccionar)
+
+        # Enfocar el campo de búsqueda al abrir
+        self.input_busqueda.setFocus()
+
+    def ejecutar_busqueda(self):
+        """Ejecuta la búsqueda en la API de Facturama"""
+        termino = self.input_busqueda.text().strip()
+        if not termino:
+            return
+
+        self.lbl_estado.setText("Buscando...")
+        self.tabla.setRowCount(0)
+        QApplication.processEvents()
+
+        FACTURAMA_USER = "ProElectro"
+        FACTURAMA_PASS = "Proelectro123"
+        FACTURAMA_URL = "https://apisandbox.facturama.mx"
+
+        try:
+            url = f"{FACTURAMA_URL}/api/Catalogs/ProductsOrServices?keyword={termino}"
+            resp = requests.get(url, auth=(FACTURAMA_USER, FACTURAMA_PASS), timeout=10)
+
+            if resp.status_code == 200:
+                resultados = resp.json()
+                if not resultados:
+                    self.lbl_estado.setText(f"Sin resultados para '{termino}'. Intenta con otro término.")
+                    return
+
+                # Mostrar máximo 50
+                mostrar = resultados[:50]
+                self.tabla.setRowCount(len(mostrar))
+                for fila, item in enumerate(mostrar):
+                    clave = item.get("Value", "")
+                    desc = item.get("Name", "")
+                    self.tabla.setItem(fila, 0, QTableWidgetItem(str(clave)))
+                    item_desc = QTableWidgetItem(str(desc))
+                    item_desc.setToolTip(str(desc))
+                    self.tabla.setItem(fila, 1, item_desc)
+
+                self.lbl_estado.setText(f"{len(resultados)} resultado(s) encontrados." + 
+                                       (" Mostrando los primeros 50." if len(resultados) > 50 else ""))
+            elif resp.status_code == 401:
+                self.lbl_estado.setText("Error de autenticación. Contacta al desarrollador.")
+            else:
+                self.lbl_estado.setText(f"Error del servidor ({resp.status_code}).")
+        except requests.exceptions.RequestException:
+            self.lbl_estado.setText("Sin conexión. Verifica tu internet.")
+
+    def seleccionar(self):
+        fila = self.tabla.currentRow()
+        if fila >= 0:
+            self.clave_seleccionada = self.tabla.item(fila, 0).text()
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Aviso", "Selecciona una clave de la lista.")
+
+
+# ────────────────────────────────────────────────
+# Diálogo para seleccionar clave SAT del catálogo
+# ────────────────────────────────────────────────
+class DialogoSeleccionarClaveSAT(QDialog):
+    def __init__(self, parent=None, resultados=[]):
+        super().__init__(parent)
+        self.setWindowTitle("Seleccionar Clave SAT del Producto")
+        self.setFixedSize(700, 450)
+        self.setModal(True)
+        self.clave_seleccionada = None
+        self.resultados = resultados
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(15)
+
+        lbl_info = QLabel("Selecciona la clave SAT que mejor describa tu producto:")
+        lbl_info.setStyleSheet("font-size: 14px; font-weight: bold; color: #2c3e50;")
+        layout.addWidget(lbl_info)
+
+        self.tabla = QTableWidget()
+        self.tabla.setColumnCount(2)
+        self.tabla.setHorizontalHeaderLabels(["Clave", "Descripción"])
+        self.tabla.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.tabla.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tabla.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tabla.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tabla.setAlternatingRowColors(True)
+        self.tabla.setStyleSheet("""
+            QTableWidget { alternate-background-color: #F9FAFB; }
+            QTableWidget::item:selected { background-color: #3498db; color: white; }
+        """)
+        layout.addWidget(self.tabla)
+
+        # Llenar tabla (máximo 50 resultados para no saturar)
+        mostrar = resultados[:50]
+        self.tabla.setRowCount(len(mostrar))
+        for fila, item in enumerate(mostrar):
+            clave = item.get("Value", "") if isinstance(item, dict) else str(item[0]) if isinstance(item, (list, tuple)) else ""
+            desc = item.get("Name", "") if isinstance(item, dict) else str(item[1]) if isinstance(item, (list, tuple)) else ""
+            self.tabla.setItem(fila, 0, QTableWidgetItem(str(clave)))
+            item_desc = QTableWidgetItem(str(desc))
+            item_desc.setToolTip(str(desc))
+            self.tabla.setItem(fila, 1, item_desc)
+
+        if len(resultados) > 50:
+            lbl_nota = QLabel(f"Mostrando 50 de {len(resultados)} resultados. Usa una búsqueda más específica.")
+            lbl_nota.setStyleSheet("color: #718096; font-style: italic;")
+            layout.addWidget(lbl_nota)
+
+        btn_seleccionar = QPushButton("✅ Seleccionar")
+        btn_seleccionar.setObjectName("botonPrincipal")
+        btn_seleccionar.setMinimumHeight(45)
+        btn_seleccionar.clicked.connect(self.seleccionar)
+        layout.addWidget(btn_seleccionar)
+
+    def seleccionar(self):
+        fila = self.tabla.currentRow()
+        if fila >= 0:
+            self.clave_seleccionada = self.tabla.item(fila, 0).text()
+            self.accept()
+        else:
+            QMessageBox.warning(self, "Aviso", "Selecciona una clave de la lista.")
+
+
+# ────────────────────────────────────────────────
+# Diálogo para asignar clave SAT a múltiples productos
+# ────────────────────────────────────────────────
+class DialogoAsignarClaveMasiva(QDialog):
+    def __init__(self, parent=None, clave_sat=""):
+        super().__init__(parent)
+        self.clave_sat = clave_sat
+        self.setWindowTitle(f"Asignar Clave SAT: {clave_sat}")
+        self.setFixedSize(750, 550)
+        self.setModal(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(12)
+
+        lbl_titulo = QLabel(f"Asignar clave SAT '{clave_sat}' a múltiples productos")
+        lbl_titulo.setStyleSheet("font-size: 15px; font-weight: bold; color: #2c3e50;")
+        layout.addWidget(lbl_titulo)
+
+        # Buscador
+        buscar_layout = QHBoxLayout()
+        self.input_buscar = QLineEdit()
+        self.input_buscar.setPlaceholderText("🔍 Buscar por código o descripción...")
+        self.input_buscar.setMinimumHeight(38)
+        self.input_buscar.textChanged.connect(self.filtrar_productos)
+        buscar_layout.addWidget(self.input_buscar)
+
+        btn_seleccionar_todos = QPushButton("☑️ Seleccionar todos")
+        btn_seleccionar_todos.setFixedHeight(38)
+        btn_seleccionar_todos.clicked.connect(self.seleccionar_todos)
+        buscar_layout.addWidget(btn_seleccionar_todos)
+        layout.addLayout(buscar_layout)
+
+        # Tabla con checkboxes
+        self.tabla = QTableWidget()
+        self.tabla.setColumnCount(4)
+        self.tabla.setHorizontalHeaderLabels(["✓", "Código", "Descripción", "Clave SAT Actual"])
+        self.tabla.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.tabla.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.tabla.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.tabla.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.tabla.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tabla.setAlternatingRowColors(True)
+        self.tabla.setStyleSheet("QTableWidget { alternate-background-color: #F9FAFB; }")
+        layout.addWidget(self.tabla)
+
+        # Botón guardar
+        btn_guardar = QPushButton(f"💾 Asignar clave '{clave_sat}' a los seleccionados")
+        btn_guardar.setObjectName("botonPrincipal")
+        btn_guardar.setMinimumHeight(48)
+        btn_guardar.clicked.connect(self.guardar_masivo)
+        layout.addWidget(btn_guardar)
+
+        # Cargar productos sin clave SAT o con clave diferente
+        self.todos_productos = []
+        self.cargar_productos()
+
+    def cargar_productos(self):
+        """Carga productos que NO tienen esta clave SAT asignada"""
+        conn = obtener_conexion()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, codigo_producto, descripcion, clave_sat_producto 
+            FROM inventario 
+            WHERE clave_sat_producto IS NULL OR clave_sat_producto != ?
+            ORDER BY descripcion
+        """, (self.clave_sat,))
+        self.todos_productos = cursor.fetchall()
+        conn.close()
+        self.mostrar_productos(self.todos_productos)
+
+    def mostrar_productos(self, productos):
+        self.tabla.setRowCount(len(productos))
+        for fila, (pid, codigo, desc, clave_actual) in enumerate(productos):
+            # Checkbox
+            chk = QTableWidgetItem()
+            chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            chk.setCheckState(Qt.Unchecked)
+            chk.setData(Qt.UserRole, pid)
+            self.tabla.setItem(fila, 0, chk)
+
+            self.tabla.setItem(fila, 1, QTableWidgetItem(codigo))
+            item_desc = QTableWidgetItem(desc)
+            item_desc.setToolTip(desc)
+            self.tabla.setItem(fila, 2, item_desc)
+            self.tabla.setItem(fila, 3, QTableWidgetItem(clave_actual or "— Sin clave —"))
+
+    def filtrar_productos(self):
+        texto = self.input_buscar.text().strip().lower()
+        if not texto:
+            self.mostrar_productos(self.todos_productos)
+        else:
+            filtrados = [p for p in self.todos_productos if texto in p[1].lower() or texto in p[2].lower()]
+            self.mostrar_productos(filtrados)
+
+    def seleccionar_todos(self):
+        for fila in range(self.tabla.rowCount()):
+            self.tabla.item(fila, 0).setCheckState(Qt.Checked)
+
+    def guardar_masivo(self):
+        """Asigna la clave SAT a todos los productos seleccionados"""
+        seleccionados = []
+        for fila in range(self.tabla.rowCount()):
+            item = self.tabla.item(fila, 0)
+            if item.checkState() == Qt.Checked:
+                pid = item.data(Qt.UserRole)
+                seleccionados.append(pid)
+
+        if not seleccionados:
+            QMessageBox.warning(self, "Aviso", "Selecciona al menos un producto.")
+            return
+
+        respuesta = QMessageBox.question(self, "Confirmar",
+            f"¿Asignar la clave SAT '{self.clave_sat}' a {len(seleccionados)} producto(s)?",
+            QMessageBox.Yes | QMessageBox.No)
+        
+        if respuesta == QMessageBox.No:
+            return
+
+        conn = obtener_conexion()
+        cursor = conn.cursor()
+        errores = []
+
+        for pid in seleccionados:
+            try:
+                # Actualizar en la nube
+                exito, msj = operacion_crud_nube('inventario', 'UPDATE', {"clave_sat_producto": self.clave_sat}, pid)
+                if not exito:
+                    errores.append(f"Producto ID {pid}: {msj}")
+                    continue
+                # Actualizar local
+                cursor.execute("UPDATE inventario SET clave_sat_producto = ? WHERE id = ?", (self.clave_sat, pid))
+            except Exception as e:
+                errores.append(f"Producto ID {pid}: {str(e)}")
+
+        conn.commit()
+        conn.close()
+
+        if errores:
+            QMessageBox.warning(self, "Parcialmente completado",
+                f"Se asignaron {len(seleccionados) - len(errores)} de {len(seleccionados)} productos.\n\nErrores:\n" + "\n".join(errores[:5]))
+        else:
+            QMessageBox.information(self, "Éxito", f"✅ Clave SAT '{self.clave_sat}' asignada a {len(seleccionados)} producto(s).")
+        
+        self.accept()
+
+
+# ────────────────────────────────────────────────
 # Diálogo para agregar / editar producto
 # ────────────────────────────────────────────────
 class DialogoProducto(QDialog):
@@ -104,7 +448,7 @@ class DialogoProducto(QDialog):
         self.producto_id = producto_datos[0] if producto_datos else None
         titulo = "Editar Producto" if self.producto_id else "Nuevo Producto"
         self.setWindowTitle(titulo)
-        self.setFixedSize(780, 420)
+        self.setFixedSize(850, 540)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
@@ -173,6 +517,95 @@ class DialogoProducto(QDialog):
                 self.combo_prov.setCurrentIndex(idx)
         grid.addWidget(self.combo_prov, 2, 3)
 
+        # Clave SAT Producto (para facturación CFDI 4.0)
+        lbl_sat = QLabel("Clave SAT Producto:")
+        lbl_sat.setObjectName("labelTitulo")
+        grid.addWidget(lbl_sat, 4, 0)
+
+        sat_layout = QHBoxLayout()
+        sat_layout.setSpacing(8)
+        self.input_clave_sat = QLineEdit(producto_datos[9] if producto_datos and len(producto_datos) > 9 and producto_datos[9] else "")
+        self.input_clave_sat.setMinimumHeight(38)
+        self.input_clave_sat.setMinimumWidth(200)
+        self.input_clave_sat.setMaxLength(8)
+        self.input_clave_sat.setPlaceholderText("8 dígitos. Ej: 26121600")
+        sat_layout.addWidget(self.input_clave_sat, stretch=1)
+
+        btn_buscar_sat = QPushButton("🔍 Buscar")
+        btn_buscar_sat.setFixedHeight(38)
+        btn_buscar_sat.setMinimumWidth(90)
+        btn_buscar_sat.setToolTip("Buscar clave SAT por descripción del producto")
+        btn_buscar_sat.clicked.connect(self.buscar_clave_sat)
+        sat_layout.addWidget(btn_buscar_sat)
+
+        btn_asignar_masivo = QPushButton("📋 Asignar a otros")
+        btn_asignar_masivo.setFixedHeight(38)
+        btn_asignar_masivo.setMinimumWidth(120)
+        btn_asignar_masivo.setToolTip("Asignar esta misma clave SAT a otros productos")
+        btn_asignar_masivo.clicked.connect(self.asignar_clave_masiva)
+        sat_layout.addWidget(btn_asignar_masivo)
+
+        grid.addLayout(sat_layout, 4, 1, 1, 3)
+
+        # Combo de categorías SAT pre-cargadas (material eléctrico) con búsqueda
+        lbl_cat_sat = QLabel("Categoría SAT:")
+        lbl_cat_sat.setObjectName("labelTitulo")
+        grid.addWidget(lbl_cat_sat, 5, 0)
+
+        self.combo_categoria_sat = QComboBox()
+        self.combo_categoria_sat.setMinimumHeight(38)
+        self.combo_categoria_sat.setEditable(True)
+        self.combo_categoria_sat.setInsertPolicy(QComboBox.NoInsert)
+        self.combo_categoria_sat.lineEdit().setPlaceholderText("Escribe para buscar categoría...")
+        self.combo_categoria_sat.addItem("", "")
+        
+        # Catálogo de categorías SAT para material eléctrico (Pro Electro)
+        categorias_sat = [
+            ("26121600", "Cables eléctricos y accesorios"),
+            ("26121500", "Alambre eléctrico"),
+            ("39122200", "Interruptores eléctricos y accesorios"),
+            ("39121529", "Contactores"),
+            ("39121500", "Conmutadores, controles, relés y accesorios"),
+            ("39121100", "Centros de control, distribución y accesorios"),
+            ("39121001", "Transformadores de distribución de potencia"),
+            ("39121700", "Ferretería eléctrica y suministros"),
+            ("39121400", "Conectores, terminales y lengüetas eléctricas"),
+            ("39131714", "Canaletas para cables"),
+            ("39131715", "Conducto/manguera flexible (Liquid Tight)"),
+            ("39101600", "Lámparas y bombillas"),
+            ("39111611", "Reflectores de iluminación"),
+            ("26111700", "Motores eléctricos"),
+            ("39121300", "Cuadros, registros y fusibles eléctricos"),
+            ("31161700", "Tuercas y rondanas"),
+            ("31161500", "Tornillos"),
+            ("27112100", "Abrazaderas y herramientas de sujeción"),
+            ("31201500", "Cinta adhesiva/aislante"),
+            ("39121400", "Enchufes, clavijas y contactos"),
+            ("30191800", "Gabinetes y cajas eléctricas"),
+            ("40171500", "Tuberías (conduit, PVC)"),
+            ("26131700", "Cajas de conexión y registro"),
+            ("39121111", "Tableros de fusibles"),
+            ("41113600", "Instrumentos de medición (multímetros)"),
+            ("27111700", "Herramientas manuales"),
+            ("31162906", "Abrazaderas de manguera o tubo"),
+            ("31162800", "Varillas roscadas"),
+            ("39101900", "Balastos y transformadores de lámparas"),
+            ("26101600", "Generadores eléctricos"),
+        ]
+        
+        for clave, descripcion in categorias_sat:
+            self.combo_categoria_sat.addItem(f"{clave} - {descripcion}", clave)
+        
+        # Habilitar filtrado mientras se escribe
+        items_texto = [f"{c} - {d}" for c, d in categorias_sat]
+        completer = QCompleter(items_texto)
+        completer.setFilterMode(Qt.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        self.combo_categoria_sat.setCompleter(completer)
+        
+        self.combo_categoria_sat.currentIndexChanged.connect(self.seleccionar_categoria_sat)
+        grid.addWidget(self.combo_categoria_sat, 5, 1, 1, 3)
+
         layout.addLayout(grid)
         layout.addStretch()
 
@@ -181,6 +614,28 @@ class DialogoProducto(QDialog):
         btn_guardar.setMinimumHeight(48)
         btn_guardar.clicked.connect(self.guardar)
         layout.addWidget(btn_guardar, alignment=Qt.AlignCenter)
+
+    def seleccionar_categoria_sat(self, index):
+        """Al seleccionar una categoría del combo, llena automáticamente el campo de clave SAT"""
+        clave = self.combo_categoria_sat.currentData()
+        if clave:
+            self.input_clave_sat.setText(clave)
+
+    def buscar_clave_sat(self):
+        """Abre diálogo de búsqueda de claves SAT con su propio campo de texto"""
+        dialogo = DialogoBuscarClaveSAT(self)
+        if dialogo.exec():
+            self.input_clave_sat.setText(dialogo.clave_seleccionada)
+
+    def asignar_clave_masiva(self):
+        """Abre un diálogo para asignar la clave SAT actual a múltiples productos"""
+        clave = self.input_clave_sat.text().strip()
+        if not clave or len(clave) != 8:
+            QMessageBox.warning(self, "Aviso", "Primero ingresa o busca una clave SAT válida (8 dígitos) para poder asignarla a otros productos.")
+            return
+        
+        dialogo = DialogoAsignarClaveMasiva(self, clave)
+        dialogo.exec()
 
     def cargar_unidades_medida(self):
         """Carga las unidades de medida en el combobox"""
@@ -245,8 +700,9 @@ class DialogoProducto(QDialog):
         um = self.combo_um.currentText()
         prov_id = self.combo_prov.currentData()
         marca = self.input_marca.text().strip()
+        clave_sat = self.input_clave_sat.text().strip() or None
 
-        datos_dict = {"codigo_producto": codigo, "descripcion": desc, "stock": stock, "um": um, "proveedor_id": prov_id, "marca": marca, "precio_compra": compra, "precio_venta": venta}
+        datos_dict = {"codigo_producto": codigo, "descripcion": desc, "stock": stock, "um": um, "proveedor_id": prov_id, "marca": marca, "precio_compra": compra, "precio_venta": venta, "clave_sat_producto": clave_sat}
 
         conn = obtener_conexion()
         cursor = conn.cursor()
@@ -284,15 +740,15 @@ class DialogoProducto(QDialog):
                 if codigo_viejo != codigo:
                     cursor.execute("UPDATE cotizaciones_detalle SET codigo_producto=? WHERE codigo_producto=?", (codigo, codigo_viejo))
 
-                cursor.execute("UPDATE inventario SET codigo_producto=?, descripcion=?, stock=?, um=?, proveedor_id=?, marca=?, precio_compra=?, precio_venta=? WHERE id=?", 
-                               (codigo, desc, stock, um, prov_id, marca, compra, venta, self.producto_id))
+                cursor.execute("UPDATE inventario SET codigo_producto=?, descripcion=?, stock=?, um=?, proveedor_id=?, marca=?, precio_compra=?, precio_venta=?, clave_sat_producto=? WHERE id=?", 
+                               (codigo, desc, stock, um, prov_id, marca, compra, venta, clave_sat, self.producto_id))
                 
                 cursor.execute("PRAGMA foreign_keys = ON;")
             else:
                 exito, nuevo_id = operacion_crud_nube('inventario', 'INSERT', datos_dict)
                 if not exito: raise Exception(nuevo_id)
-                cursor.execute("INSERT INTO inventario (id, codigo_producto, descripcion, stock, um, proveedor_id, marca, precio_compra, precio_venta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", 
-                               (nuevo_id, codigo, desc, stock, um, prov_id, marca, compra, venta))
+                cursor.execute("INSERT INTO inventario (id, codigo_producto, descripcion, stock, um, proveedor_id, marca, precio_compra, precio_venta, clave_sat_producto) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", 
+                               (nuevo_id, codigo, desc, stock, um, prov_id, marca, compra, venta, clave_sat))
                 
             conn.commit()
             self.accept()
@@ -368,7 +824,7 @@ class DialogoGestionUM(QDialog):
         conn = obtener_conexion()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, sigla, descripcion 
+            SELECT id, sigla, descripcion, clave_sat_unidad 
             FROM catalogo_um 
             ORDER BY sigla
         """)
@@ -377,7 +833,7 @@ class DialogoGestionUM(QDialog):
 
         self.tabla.setRowCount(len(unidades))
 
-        for fila, (uid, sigla, descripcion) in enumerate(unidades):
+        for fila, (uid, sigla, descripcion, clave_sat) in enumerate(unidades):
             # Item de Sigla
             item_sigla = QTableWidgetItem(sigla)
             item_sigla.setFlags(item_sigla.flags() & ~Qt.ItemIsEditable)
@@ -393,8 +849,8 @@ class DialogoGestionUM(QDialog):
             btn_editar = QPushButton("✏️ Editar")
             btn_editar.setObjectName("botonEditar")
             btn_editar.setFixedSize(90, 32)
-            btn_editar.clicked.connect(lambda checked, u=uid, s=sigla, d=descripcion: 
-                                      self.editar_um(u, s, d))
+            btn_editar.clicked.connect(lambda checked, u=uid, s=sigla, d=descripcion, c=clave_sat: 
+                                      self.editar_um(u, s, d, c))
             self.tabla.setCellWidget(fila, 2, btn_editar)
             
             # Botón Eliminar
@@ -419,7 +875,7 @@ class DialogoGestionUM(QDialog):
             self.cargar_tabla()
             
 
-    def editar_um(self, uid, sigla_actual, descripcion_actual):
+    def editar_um(self, uid, sigla_actual, descripcion_actual, clave_sat_actual=""):
         """Abre diálogo para editar una unidad de medida"""
         # --- REGLA 1: Bloqueo de UI sin internet ---
         try:
@@ -428,7 +884,7 @@ class DialogoGestionUM(QDialog):
             QMessageBox.warning(self, "Sin conexión", "Revisa tu conexión a internet para continuar.")
             return
         # ------------------------------------------
-        dialogo = DialogoEditarUM(self, uid, sigla_actual, descripcion_actual)
+        dialogo = DialogoEditarUM(self, uid, sigla_actual, descripcion_actual, clave_sat_actual or "")
         if dialogo.exec():
             self.cargar_tabla()
             
@@ -484,12 +940,12 @@ class DialogoGestionUM(QDialog):
 # Diálogo para editar Unidad de Medida
 # ────────────────────────────────────────────────
 class DialogoEditarUM(QDialog):
-    def __init__(self, parent=None, uid=None, sigla_actual="", descripcion_actual=""):
+    def __init__(self, parent=None, uid=None, sigla_actual="", descripcion_actual="", clave_sat_actual=""):
         super().__init__(parent)
         self.uid = uid
         self.sigla_actual = sigla_actual
         self.setWindowTitle(f"Editar Unidad de Medida: {sigla_actual}")
-        self.setFixedSize(380, 260)
+        self.setFixedSize(380, 330)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
@@ -516,6 +972,16 @@ class DialogoEditarUM(QDialog):
         self.input_desc.setPlaceholderText("Descripción opcional")
         layout.addWidget(self.input_desc)
 
+        # Clave SAT Unidad
+        lbl_sat = QLabel("Clave SAT Unidad:")
+        lbl_sat.setObjectName("labelTitulo")
+        layout.addWidget(lbl_sat)
+
+        self.input_clave_sat = QLineEdit(clave_sat_actual if clave_sat_actual else "")
+        self.input_clave_sat.setMinimumHeight(38)
+        self.input_clave_sat.setPlaceholderText("Ej: MTR, H87, E48 (para facturación)")
+        layout.addWidget(self.input_clave_sat)
+
         layout.addStretch()
 
         # Botones
@@ -537,6 +1003,7 @@ class DialogoEditarUM(QDialog):
     def guardar(self):
         nueva_sigla = self.input_sigla.text().strip().upper()
         nueva_desc = self.input_desc.text().strip()
+        nueva_clave_sat = self.input_clave_sat.text().strip().upper() or None
 
         if not nueva_sigla:
             QMessageBox.warning(self, "Requerido", "La sigla es obligatoria.")
@@ -579,7 +1046,7 @@ class DialogoEditarUM(QDialog):
 
             # --- REGLA 3: NUBE PRIMERO (Cascada) ---
             # 1. Actualizar la tabla catalogo_um en la nube
-            um_dict = {"sigla": nueva_sigla, "descripcion": nueva_desc}
+            um_dict = {"sigla": nueva_sigla, "descripcion": nueva_desc, "clave_sat_unidad": nueva_clave_sat}
             exito_um, msj_um = operacion_crud_nube('catalogo_um', 'UPDATE', um_dict, self.uid)
             if not exito_um: raise Exception(f"Error actualizando UM en la nube: {msj_um}")
 
@@ -596,8 +1063,8 @@ class DialogoEditarUM(QDialog):
 
             # --- LOCAL DESPUÉS DEL ÉXITO EN LA NUBE ---
             cursor.execute("""
-                UPDATE catalogo_um SET sigla = ?, descripcion = ? WHERE id = ?
-            """, (nueva_sigla, nueva_desc, self.uid))
+                UPDATE catalogo_um SET sigla = ?, descripcion = ?, clave_sat_unidad = ? WHERE id = ?
+            """, (nueva_sigla, nueva_desc, nueva_clave_sat, self.uid))
             
             cursor.execute("""
                 UPDATE inventario SET um = ? WHERE um = ?
@@ -1067,7 +1534,7 @@ class VistaInventario(QWidget):
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, codigo_producto, descripcion, stock, um, proveedor_id, marca,
-                   precio_compra, precio_venta
+                   precio_compra, precio_venta, clave_sat_producto
             FROM inventario
             WHERE codigo_producto LIKE ? OR descripcion LIKE ?
             ORDER BY id DESC
