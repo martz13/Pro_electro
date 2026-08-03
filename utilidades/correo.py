@@ -39,6 +39,15 @@ def enviar_factura_por_correo(correo_destino, nombre_cliente, folio_factura, rut
         return False, "No se ha configurado la contraseña de aplicación de Gmail.\nContacta al desarrollador."
 
     try:
+        # Obtener teléfono de datos fiscales
+        from base_datos.conexion import obtener_conexion
+        conn = obtener_conexion()
+        cursor = conn.cursor()
+        cursor.execute("SELECT telefono FROM datos_fiscales WHERE id = 1")
+        row = cursor.fetchone()
+        telefono_empresa = row[0] if row and row[0] else "(81) 8255 2128"
+        conn.close()
+
         # Crear mensaje
         msg = MIMEMultipart()
         msg['From'] = SMTP_CORREO
@@ -58,7 +67,7 @@ Si tiene alguna duda sobre este documento, no dude en contactarnos.
 
 Atentamente,
 Pro Electro
-Tel. (81) 1634 7681
+Tel. {telefono_empresa}
 {SMTP_CORREO}
 
 ---

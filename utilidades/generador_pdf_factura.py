@@ -632,9 +632,9 @@ def generar_pdf_factura(factura_id, ruta_destino=None):
 
     # Borde exterior + líneas interiores de la última sección de tabla
     # 🌟 Borde exterior + líneas interiores (Grid Estirable) 🌟
-    # Definimos un límite fijo (Y = 195) para que el diseño mantenga 
-    # la proporción de la página y empuje los totales hacia abajo.
-    LIMITE_Y_FIJO = 195
+    # Definimos un límite fijo para que el diseño mantenga 
+    # la proporción de la página y quepan totales + sellos debajo.
+    LIMITE_Y_FIJO = 175
     
     if y_current < LIMITE_Y_FIJO:
         y_bottom = LIMITE_Y_FIJO
@@ -733,35 +733,26 @@ def generar_pdf_factura(factura_id, ruta_destino=None):
             y += 2.5
         return y + 1.5
 
+    # QR — se coloca junto a los datos SAT, en la misma página que y_fiscal
+    if ruta_qr and os.path.exists(ruta_qr):
+        pdf.image(ruta_qr, x=165, y=y_fiscal, w=35, h=35)
+
     y_cadenas = imprimir_texto_largo("Cadena original del complemento de certificacion digital del SAT:", cadena_original, 10, y_cadenas)
     y_cadenas = imprimir_texto_largo("Sello digital del CFDI:", sello_cfdi, 10, y_cadenas)
     y_cadenas = imprimir_texto_largo("Sello digital del SAT:", sello_sat, 10, y_cadenas)
 
-    # QR — se coloca junto a los datos SAT, no en Y fija
-    if ruta_qr and os.path.exists(ruta_qr):
-        pdf.image(ruta_qr, x=165, y=y_fiscal, w=35, h=35)
-
-    # ── PIE DE PÁGINA — siempre en la última página, posición dinámica ──────
-    y_footer = max(y_cadenas + 3, pdf.get_y() + 3)
-    if y_footer + 10 > 275:
-        pdf.add_page()
-        y_footer = 268
-
-    pdf.set_draw_color(180, 180, 180)
-    pdf.line(10, y_footer, 200, y_footer)
-    pdf.set_draw_color(0, 0, 0)
+    # ── PIE DE PÁGINA — posición dinámica justo después de los sellos ──────
+    y_footer = max(y_cadenas + 2, pdf.get_y() + 2)
 
     pdf.set_font("helvetica", "B", 5)
-    pdf.set_xy(10, y_footer + 2)
+    pdf.set_xy(10, y_footer)
     pdf.cell(100, 3, f"FORMA DE PAGO: {desc_forma_pago}")
-    pdf.set_xy(105, y_footer + 2)
+    pdf.set_xy(105, y_footer)
     pdf.cell(95, 3, f"REGIMEN FISCAL: {regimen_emp} - {desc_regimen_emp}")
 
-    pdf.set_xy(10, y_footer + 5)
-    pdf.cell(100, 3, f"METODO DE PAGO: {desc_metodo_pago}")
-    pdf.set_font("helvetica", "B", 6)
-    pdf.set_xy(10, y_footer + 8)
-    pdf.cell(190, 3, "ESTE DOCUMENTO ES UNA REPRESENTACION IMPRESA DE UN CFDI", align="C")
+    pdf.set_xy(10, y_footer + 3)
+    pdf.cell(60, 3, f"METODO DE PAGO: {desc_metodo_pago}")
+    pdf.cell(130, 3, "ESTE DOCUMENTO ES UNA REPRESENTACION IMPRESA DE UN CFDI", align="R")
 
     # ── GUARDAR ────────────────────────────────────────────────────────────
     if ruta_destino:
