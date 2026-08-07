@@ -414,7 +414,7 @@ def generar_pdf_factura(factura_id, ruta_destino=None):
 
     # Bloque Izquierdo (Cliente) — llega hasta x=125, deja 1mm antes del bloque derecho
     pdf.set_fill_color(255, 255, 255)
-    pdf.rect(10, y0, 115, 26, style="FD")
+    pdf.rect(10, y0, 115, 28, style="FD")
     pdf.set_fill_color(*GRIS_OSCURO)
     pdf.rect(10, y0, 115, 5, style="FD")
 
@@ -423,23 +423,23 @@ def generar_pdf_factura(factura_id, ruta_destino=None):
     pdf.cell(115, 5, "FACTURADO A:", align="C")
 
     pdf.set_font("helvetica", "", 7)
-    pdf.set_xy(12, y0 + 5)
+    pdf.set_xy(12, y0 + 6.8)
     pdf.cell(110, 3.3, f"DATOS DE CLIENTE: {nom_cl}")
-    pdf.set_xy(12, y0 + 8.3)
+    pdf.set_xy(12, y0 + 10.3)
     pdf.cell(110, 3.3, dir_cl)
-    pdf.set_xy(12, y0 + 11.6)
+    pdf.set_xy(12, y0 + 13.6)
     pdf.cell(110, 3.3, f"COLONIA {col_cl} C.P. {cp_cl}")
-    pdf.set_xy(12, y0 + 14.9)
+    pdf.set_xy(12, y0 + 16.9)
     pdf.cell(110, 3.3, f"{pob_cl}")
-    pdf.set_xy(12, y0 + 18.2)
+    pdf.set_xy(12, y0 + 20.2)
     pdf.cell(110, 3.3, f"RFC. {rfc_cl}")
     pdf.set_font("helvetica", "", 6)
-    pdf.set_xy(12, y0 + 21.5)
+    pdf.set_xy(12, y0 + 23.5)
     pdf.cell(110, 3.3, f"REGIMEN FISCAL: {regimen_cl} {REGIMENES.get(regimen_cl, '')}")
     pdf.set_font("helvetica", "", 7)
 
     # ── FILA PEDIDO / VENDEDOR — mismo ancho que "FACTURADO A" (115), 1mm antes del bloque derecho
-    y1 = y0 + 27
+    y1 = y0 + 29
     w_cols1 = [25, 35, 30, 25]  # suma = 115, llega hasta x=125
     lbls1 = ["PEDIDO", "VENDEDOR", "CONDICIONES PAGO", "REFERENCIA"]
     vals1 = [folio_cot, vendedor, "CONTADO", oc]
@@ -464,7 +464,7 @@ def generar_pdf_factura(factura_id, ruta_destino=None):
     x_der    = 126
     w_lbl    = 22   # columna etiqueta reducida
     w_val    = 52   # columna valor (llega hasta 200: 126+22+52=200)
-    altura_der = 37
+    altura_der = 39
     pdf.rect(x_der, y0, w_lbl + w_val, altura_der)
     # Sin línea divisora interior
     pdf.set_draw_color(255, 255, 255)
@@ -536,6 +536,8 @@ def generar_pdf_factura(factura_id, ruta_destino=None):
     y_current = y_items_start
     # Guardamos la página donde empieza la tabla para dibujar el rect al final de esa página
     pagina_tabla_inicio = pdf.page_no()
+    # Flag para saber si hubo salto de página durante los productos
+    hubo_salto_pagina = False
     pdf.set_font("helvetica", "", 7)
 
     for prod in productos:
@@ -554,6 +556,8 @@ def generar_pdf_factura(factura_id, ruta_destino=None):
 
         # ── Salto de página ────────────────────────────────────────────────
         if y_current + alto_fila > 268:
+            # Marcar que hubo salto — la tabla será flexible al final
+            hubo_salto_pagina = True
             # Cerrar tabla en esta página
             pdf.set_draw_color(0, 0, 0)
             pdf.rect(10, y_items_start, 190, y_current - y_items_start)
@@ -632,13 +636,17 @@ def generar_pdf_factura(factura_id, ruta_destino=None):
 
     # Borde exterior + líneas interiores de la última sección de tabla
     # 🌟 Borde exterior + líneas interiores (Grid Estirable) 🌟
-    # Definimos un límite fijo para que el diseño mantenga 
-    # la proporción de la página y quepan totales + sellos debajo.
-    LIMITE_Y_FIJO = 175
-    
-    if y_current < LIMITE_Y_FIJO:
-        y_bottom = LIMITE_Y_FIJO
+    # Si la factura cabe en una sola hoja → tabla fija (LIMITE_Y_FIJO) para diseño equilibrado.
+    # Si hubo salto de página → tabla flexible, cierra justo después del último artículo.
+    if not hubo_salto_pagina:
+        # Una sola hoja: mantener tamaño fijo de tabla
+        LIMITE_Y_FIJO = 175
+        if y_current < LIMITE_Y_FIJO:
+            y_bottom = LIMITE_Y_FIJO
+        else:
+            y_bottom = y_current + 3
     else:
+        # Múltiples hojas: tabla flexible, cierra justo tras el último artículo
         y_bottom = y_current + 3
 
     pdf.set_draw_color(0, 0, 0)

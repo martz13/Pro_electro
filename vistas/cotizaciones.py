@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                QGridLayout, QComboBox, QDateEdit, QDoubleSpinBox, QGroupBox,
                                QScrollArea, QFrame, QSizePolicy, QSpinBox, QApplication,
                                QInputDialog, QFileDialog)
-from PySide6.QtCore import Qt, QDate, Signal
+from PySide6.QtCore import Qt, QDate, Signal, QThread
 from PySide6.QtGui import QColor
 import requests
 import os
@@ -1015,6 +1015,59 @@ class DialogoFacturar(QDialog):
 
 
 # ==========================================
+# WORKER PARA ENVÍO DE CORREO EN HILO SEPARADO
+# ==========================================
+# ==========================================
+# HILO PARA ENVÍO DE CORREO EN BACKGROUND
+# ==========================================
+class HiloEnvioCorreo(QThread):
+    """
+    Subclase de QThread que ejecuta el envío de correo en background.
+    Las señales se emiten desde el hilo secundario y PySide6 las entrega
+    automáticamente en el hilo principal a través de la cola de eventos.
+    """
+    terminado = Signal(bool, str)   # (exito, mensaje)
+    progreso  = Signal(str)         # mensaje de estado intermedio
+
+    def __init__(self, cfdi_id, folio, factura_id, correo_cliente, nombre_cliente):
+        super().__init__()
+        self.cfdi_id        = cfdi_id
+        self.folio          = folio
+        self.factura_id     = factura_id
+        self.correo_cliente = correo_cliente
+        self.nombre_cliente = nombre_cliente
+
+    def run(self):
+        import tempfile
+        from utilidades.correo import enviar_factura_por_correo
+        from utilidades.generador_pdf_factura import generar_pdf_factura
+        from utilidades.facturacion import descargar_xml
+
+        try:
+            self.progreso.emit("Generando PDF...")
+            ruta_pdf_temp = os.path.join(tempfile.gettempdir(), f"Factura_{self.folio}.pdf")
+            exito_pdf, ruta_pdf = generar_pdf_factura(self.factura_id, ruta_destino=ruta_pdf_temp)
+
+            if not exito_pdf:
+                self.terminado.emit(False, f"No se pudo generar el PDF:\n{ruta_pdf}")
+                return
+
+            self.progreso.emit("Descargando XML desde Facturama...")
+            exito_xml, ruta_xml = descargar_xml(self.cfdi_id)
+
+            self.progreso.emit("Enviando correo...")
+            exito_envio, msg_envio = enviar_factura_por_correo(
+                self.correo_cliente, self.nombre_cliente, self.folio,
+                ruta_pdf, ruta_xml if exito_xml else None
+            )
+            self.terminado.emit(exito_envio, msg_envio)
+
+        except Exception as e:
+            self.terminado.emit(False, f"Error inesperado: {str(e)}")
+
+
+
+# ==========================================
 # DIÁLOGO HISTORIAL DE FACTURAS
 # ==========================================
 class DialogoHistorialFacturas(QDialog):
@@ -1162,12 +1215,7 @@ class DialogoHistorialFacturas(QDialog):
             QMessageBox.warning(self, "Error", f"No se pudo generar el PDF:\n{resultado}")
 
     def enviar_correo(self, cfdi_id, folio, factura_id):
-        """Envía la factura por correo SMTP"""
-        from utilidades.correo import enviar_factura_por_correo
-        from utilidades.generador_pdf_factura import generar_pdf_factura
-        from utilidades.facturacion import descargar_xml
-        import tempfile
-
+        """Envía la factura por correo SMTP en un hilo separado (sin congelar la UI)."""
         # Obtener correo del cliente
         conn = obtener_conexion()
         cursor = conn.cursor()
@@ -1192,24 +1240,35 @@ class DialogoHistorialFacturas(QDialog):
         if resp == QMessageBox.No:
             return
 
-        # Generar PDF personalizado
-        ruta_pdf_temp = os.path.join(tempfile.gettempdir(), f"Factura_{folio}.pdf")
-        exito_pdf, ruta_pdf = generar_pdf_factura(factura_id, ruta_destino=ruta_pdf_temp)
+        # ── Diálogo de progreso ─────────────────────────────────────────────
+        from PySide6.QtWidgets import QProgressDialog
 
-        # Descargar XML
-        exito_xml, ruta_xml = descargar_xml(cfdi_id)
+        dialogo_carga = QProgressDialog("Preparando envío...", None, 0, 0, self)
+        dialogo_carga.setWindowTitle("Enviando factura")
+        dialogo_carga.setWindowModality(Qt.WindowModal)
+        dialogo_carga.setMinimumWidth(340)
+        dialogo_carga.setCancelButton(None)
+        dialogo_carga.setAutoClose(False)
+        dialogo_carga.setAutoReset(False)
+        dialogo_carga.show()
+        QApplication.processEvents()
 
-        if exito_pdf:
-            exito_envio, msg_envio = enviar_factura_por_correo(
-                correo_cliente, nombre_cliente, folio,
-                ruta_pdf, ruta_xml if exito_xml else None)
+        # ── Crear y lanzar hilo ─────────────────────────────────────────────
+        self._hilo_correo = HiloEnvioCorreo(
+            cfdi_id, folio, factura_id, correo_cliente, nombre_cliente
+        )
 
-            if exito_envio:
-                QMessageBox.information(self, "Enviado", msg_envio)
+        self._hilo_correo.progreso.connect(dialogo_carga.setLabelText)
+
+        def al_terminar(exito, mensaje):
+            dialogo_carga.close()
+            if exito:
+                QMessageBox.information(self, "✅ Enviado", mensaje)
             else:
-                QMessageBox.warning(self, "Error de envío", msg_envio)
-        else:
-            QMessageBox.warning(self, "Error", f"No se pudo generar el PDF para enviar:\n{ruta_pdf}")
+                QMessageBox.warning(self, "Error de envío", mensaje)
+
+        self._hilo_correo.terminado.connect(al_terminar)
+        self._hilo_correo.start()
 
     def cancelar_factura(self, cfdi_id, uuid, factura_id):
         """Cancela un CFDI"""
